@@ -10,7 +10,7 @@ class TestRecordCRUD:
     @staticmethod
     def create(
         session: Session,
-        test_filename: str,
+        filename: str,
         status: TestStatus = TestStatus.INIT,
         duration: Optional[int] = None,
         result: Optional[str] = None,
@@ -21,7 +21,7 @@ class TestRecordCRUD:
         chatflow_query: Optional[str] = None
     ) -> TestRecord:
         record = TestRecord(
-            test_filename=test_filename,
+            filename=filename,
             status=status,
             duration=duration,
             result=result,

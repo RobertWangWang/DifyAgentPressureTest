@@ -15,19 +15,46 @@ Accept: application/json
 
 ### Create a new record
 POST {{base_url}}/test_chatflow_records/
-Content-Type: application/json
+Content-Type: multipart/form-data; boundary=WebKitFormBoundary7MA4YWxkTrZu0gW
 
-{
-  "test_filename": "example.csv",
-  "status": "init",
-  "duration": 10,
-  "result": "pending",
-  "concurrency": 5,
-  "dify_api_url": "https://api.example.com/test",
-  "dify_api_key": "abcd1234",
-  "dify_username": "robertwang",
-  "chatflow_query": "What is the capital of France?"
-}
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="example.csv"
+Content-Type: text/csv
+
+< ./example.csv
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="status"
+
+init
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="duration"
+
+10
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="result"
+
+pending
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="concurrency"
+
+5
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="dify_api_url"
+
+https://api.example.com/test
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="dify_api_key"
+
+abcd1234
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="dify_username"
+
+robertwang
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="chatflow_query"
+
+What is the capital of France?
+--WebKitFormBoundary7MA4YWxkTrZu0gW--
 
 ###
 

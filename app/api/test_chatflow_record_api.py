@@ -1,11 +1,25 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from pathlib import Path
 from typing import List
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    status,
+)
+from sqlalchemy.orm import Session
 
 from app.crud.test_chatflow_record_crud import TestRecordCRUD
 from app.schemas.test_record_schema import (
-    TestRecordCreate, TestRecordRead, TestRecordUpdate
+    TestRecordCreate,
+    TestRecordRead,
+    TestRecordUpdate,
+    TestStatus,
 )
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.services.test_record_services import test_chatflow_non_stream_pressure_wrapper
 
@@ -20,8 +34,50 @@ def get_db():
 
 
 @router.post("/", response_model=TestRecordRead, status_code=status.HTTP_201_CREATED)
-def create_record(record: TestRecordCreate, db: Session = Depends(get_db)):
-    created = TestRecordCRUD.create(db, **record.dict())
+async def create_record(
+    file: UploadFile = File(...),
+    status: TestStatus = Form(TestStatus.init),
+    duration: int | None = Form(None),
+    result: str | None = Form(None),
+    concurrency: int | None = Form(1),
+    dify_api_url: str = Form(...),
+    dify_api_key: str = Form(...),
+    dify_username: str = Form(...),
+    chatflow_query: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    upload_dir = Path(settings.FILE_UPLOAD_DIR)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    original_filename = Path(file.filename or "").name
+    if not original_filename:
+        raise HTTPException(status_code=400, detail="Uploaded file must have a name.")
+
+    stem = Path(original_filename).stem
+    suffix = Path(original_filename).suffix
+    candidate_name = original_filename
+    candidate_path = upload_dir / candidate_name
+    counter = 1
+    while candidate_path.exists():
+        candidate_name = f"{stem}_{counter}{suffix}"
+        candidate_path = upload_dir / candidate_name
+        counter += 1
+
+    file_bytes = await file.read()
+    candidate_path.write_bytes(file_bytes)
+
+    record_data = TestRecordCreate(
+        filename=candidate_name,
+        status=status,
+        duration=duration,
+        result=result,
+        concurrency=concurrency,
+        dify_api_url=dify_api_url,
+        dify_api_key=dify_api_key,
+        dify_username=dify_username,
+        chatflow_query=chatflow_query,
+    )
+    created = TestRecordCRUD.create(db, **record_data.dict())
     return created
 
 

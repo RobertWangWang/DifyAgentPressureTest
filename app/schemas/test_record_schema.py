@@ -10,7 +10,7 @@ class TestStatus(str, PyEnum):
 
 
 class TestRecordCreate(BaseModel):
-    test_filename: str = Field(..., max_length=255)
+    filename: str = Field(..., max_length=255)
     status: TestStatus = TestStatus.init
     duration: int | None = None
     result: str | None = Field(None, max_length=2048)
@@ -27,7 +27,7 @@ class TestRecordCreate(BaseModel):
 class TestRecordRead(BaseModel):
     uuid: str
     created_at: datetime
-    test_filename: str
+    filename: str
     status: TestStatus
     duration: int | None
     result: str | None
@@ -42,7 +42,7 @@ class TestRecordRead(BaseModel):
 
 
 class TestRecordUpdate(BaseModel):
-    test_filename: str | None = Field(None, max_length=255)
+    filename: str | None = Field(None, max_length=255)
     status: TestStatus | None = None
     duration: int | None = None
     result: str | None = Field(None, max_length=2048)

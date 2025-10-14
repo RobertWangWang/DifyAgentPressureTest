@@ -41,7 +41,7 @@ class TestRecord(Base):
         nullable=False
     )
 
-    test_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
 
     status: Mapped[TestStatus] = mapped_column(
         SqlEnum(TestStatus, name="test_status_enum"),
@@ -66,5 +66,5 @@ class TestRecord(Base):
     def __repr__(self) -> str:
         return (
             f"<TestRecord(uuid='{self.uuid}', status='{self.status}', "
-            f"duration={self.duration}, file='{self.test_filename}')>"
+            f"duration={self.duration}, file='{self.filename}')>"
         )
