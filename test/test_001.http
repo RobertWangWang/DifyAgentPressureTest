@@ -13,7 +13,7 @@ Accept: application/json
 
 ###
 
-### Create a new record
+### Create a new record with an uploaded file
 POST {{base_url}}/test_chatflow_records/
 Content-Type: multipart/form-data; boundary=WebKitFormBoundary7MA4YWxkTrZu0gW
 
@@ -55,6 +55,24 @@ Content-Disposition: form-data; name="chatflow_query"
 
 What is the capital of France?
 --WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+###
+
+### Create a new record without a file using JSON
+POST {{base_url}}/test_chatflow_records/
+Content-Type: application/json
+
+{
+  "filename": "existing-dataset.csv",
+  "status": "init",
+  "duration": 10,
+  "result": "pending",
+  "concurrency": 5,
+  "dify_api_url": "https://api.example.com/test",
+  "dify_api_key": "abcd1234",
+  "dify_username": "robertwang",
+  "chatflow_query": "What is the capital of France?"
+}
 
 ###
 
