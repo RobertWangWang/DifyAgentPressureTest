@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.crud.test_chatflow_record_crud import TestRecordCRUD
@@ -28,6 +29,12 @@ def get_db():
 async def create_record(request: Request, db: Session = Depends(get_db)):
     content_type = request.headers.get("content-type", "").lower()
 
+    if not content_type.startswith("multipart/form-data"):
+        raise HTTPException(
+            status_code=415,
+            detail="Request content type must be multipart/form-data with a file upload.",
+        )
+
     async def _persist_upload(upload: UploadFile) -> str:
         upload_dir = Path(settings.FILE_UPLOAD_DIR)
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -51,43 +58,29 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
         await upload.close()
         return candidate_name
 
-    if content_type.startswith("multipart/form-data"):
-        form = await request.form()
-        upload = form.get("file")
+    form = await request.form()
+    upload = form.get("file")
 
-        payload_data: dict[str, str] = {}
-        for key, value in form.multi_items():
-            if key == "file":
-                continue
-            payload_data[key] = value
+    if not isinstance(upload, UploadFile):
+        raise HTTPException(
+            status_code=400,
+            detail="A 'file' upload is required and must be provided as a file.",
+        )
 
-        if isinstance(upload, UploadFile):
-            payload_data.pop("filename", None)
-            filename = await _persist_upload(upload)
-            payload_data["filename"] = filename
-        else:
-            # When using multipart/form-data, FastAPI will yield an empty string
-            # for file inputs that were not supplied. Treat empty values as a
-            # missing file while rejecting non-empty strings which likely signal
-            # a client-side mistake.
-            if isinstance(upload, str) and upload.strip():
-                raise HTTPException(
-                    status_code=400,
-                    detail="The 'file' field must be an uploaded file when provided.",
-                )
+    payload_data: dict[str, str] = {}
+    for key, value in form.multi_items():
+        if key == "file":
+            continue
+        payload_data[key] = value
 
-        record_data = TestRecordCreate(**payload_data)
-    elif content_type.startswith("application/x-www-form-urlencoded"):
-        form = await request.form()
-        record_data = TestRecordCreate(**{k: v for k, v in form.multi_items()})
-    else:
-        try:
-            payload = await request.json()
-        except Exception as exc:  # pragma: no cover - defensive guard
-            raise HTTPException(status_code=400, detail="Invalid JSON payload.") from exc
-        record_data = TestRecordCreate(**payload)
+    try:
+        record_payload = TestRecordCreate(**payload_data)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
-    created = TestRecordCRUD.create(db, **record_data.dict())
+    filename = await _persist_upload(upload)
+
+    created = TestRecordCRUD.create(db, filename=filename, **record_payload.dict())
     return created
 
 
