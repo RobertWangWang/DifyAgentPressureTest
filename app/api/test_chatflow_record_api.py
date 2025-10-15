@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List
 
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -60,8 +61,10 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
 
     form = await request.form()
     upload = form.get("file")
+    print("FORM KEYS:", form.keys())
+    print("UPLOAD TYPE:", type(upload), upload)
 
-    if not isinstance(upload, UploadFile):
+    if not isinstance(upload, StarletteUploadFile):
         raise HTTPException(
             status_code=400,
             detail="A 'file' upload is required and must be provided as a file.",
@@ -117,7 +120,7 @@ def delete_record(uuid_str: str, db: Session = Depends(get_db)):
     return None
 
 
-@router.post("/{uuid_str}/run", status_code=status.HTTP_200_OK)
+@router.post("/run_test/{uuid_str}", status_code=status.HTTP_200_OK)
 def run_record(uuid_str: str, db: Session = Depends(get_db)):
     existing = TestRecordCRUD.get_by_uuid(db, uuid_str)
     if existing is None:
