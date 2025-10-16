@@ -2,7 +2,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from rouge_score import rouge_scorer
+import sacrebleu
 
 from app.utils.pressure_test import single_test_chatflow_non_stream_pressure,validate_entry
 from app.utils.logger import logger
@@ -58,8 +59,6 @@ def get_agent_input_para_dict(input_dify_url:str,input_dify_api_key:str)->pd.Dat
     resp_json = response.json()
 
     records = []
-    print(headers)
-    print(resp_json)
 
     for item in resp_json["user_input_form"]:
         key = list(item.keys())[0]
@@ -181,7 +180,9 @@ def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord):
         input_dify_username=input_username,
         concurrency=10
     ))
-    print(results)
+
+    for ele in results:
+        print(ele)
 
     ## input_data_dict
     return input_dify_test_file

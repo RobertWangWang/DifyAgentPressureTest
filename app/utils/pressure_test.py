@@ -4,6 +4,7 @@ import tiktoken
 import time
 import json
 encoding = tiktoken.get_encoding("cl100k_base")
+import sacrebleu
 
 def single_test_chatflow_non_stream_pressure(
         input_dify_url:str,
@@ -45,11 +46,18 @@ def single_test_chatflow_non_stream_pressure(
     end = time.time()
 
     json_text = json.loads(response.text)
-    tokens = encoding.encode(json_text["answer"])
+    answer = json_text["answer"]
+    ref_answer = input_data_dict.get("ref_answer","")
+    if len(ref_answer) == 0:
+        sccore = 1
+    else:
+        sccore = sacrebleu.corpus_bleu(answer,ref_answer)
+    tokens = encoding.encode(answer)
     result_dict = {}
     result_dict["time_consumption"] = end - start
     result_dict["token_num"] = len(tokens)
     result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"]
+    result_dict["score"] = sccore
 
     return result_dict
 
