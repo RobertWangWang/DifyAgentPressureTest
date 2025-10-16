@@ -79,52 +79,55 @@ def get_agent_input_para_dict(input_dify_url:str,input_dify_api_key:str)->pd.Dat
 
     return para_df
 
+import asyncio
+import aiohttp
 
-def run_chatflow_tests_parallel(df, input_dify_url, input_dify_api_key, input_query, input_dify_username,
-                                concurrency: int = 5):
+async def run_chatflow_tests_async(
+    df,
+    input_dify_url: str,
+    input_dify_api_key: str,
+    input_query: str,
+    input_dify_username: str,
+    concurrency: int = 10
+):
     """
-    使用 ThreadPoolExecutor 并发执行 DataFrame 中的多行测试任务。
+    使用 asyncio 实现异步限并发执行测试任务。
     每一行只执行一次 single_test_chatflow_non_stream_pressure。
-
-    参数:
-        df: pandas.DataFrame - 包含测试数据
-        input_dify_url, input_dify_api_key, input_query, input_dify_username: API 参数
-        concurrency: 并发线程数
     """
+
+    semaphore = asyncio.Semaphore(concurrency)
     all_results = []
 
-    def _run_single_test(index, row):
+    async def _run_single(index, row, session):
         row_dict = row.to_dict()
-        logger.debug(f"开始执行第 {index + 1} 行测试")
-        try:
-            result = single_test_chatflow_non_stream_pressure(
-                input_dify_url,
-                input_dify_api_key,
-                input_query,
-                input_dify_username,
-                row_dict
-            )
-            logger.success(f"✅ [Row {index + 1}] 测试完成: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"❌ [Row {index + 1}] 出错: {e}")
-            return {"index": index, "error": str(e)}
-
-    logger.info(f"🚀 启动多线程测试，共 {len(df)} 条记录，并发线程数={concurrency}")
-
-    # 启动全局线程池
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = {executor.submit(_run_single_test, idx, row): idx for idx, row in df.iterrows()}
-
-        for future in as_completed(futures):
+        async with semaphore:
             try:
-                result = future.result()
-                all_results.append(result)
+                logger.debug(f"开始执行第 {index + 1} 行测试")
+                # ---- 模拟 single_test_chatflow_non_stream_pressure 异步版本 ----
+                # 如果你的函数是同步的，可以使用 asyncio.to_thread 包装：
+                result = await asyncio.to_thread(
+                    single_test_chatflow_non_stream_pressure,
+                    input_dify_url,
+                    input_dify_api_key,
+                    input_query,
+                    input_dify_username,
+                    row_dict
+                )
+                logger.success(f"✅ [Row {index + 1}] 测试完成: {result}")
+                return result
             except Exception as e:
-                idx = futures[future]
-                logger.error(f"⚠️ 线程执行第 {idx + 1} 行任务时异常: {e}")
+                logger.error(f"❌ [Row {index + 1}] 出错: {e}")
+                return {"index": index, "error": str(e)}
 
-    logger.info("🏁 全部测试完成")
+    logger.info(f"🚀 启动异步测试，共 {len(df)} 条记录，最大并发={concurrency}")
+
+    async with aiohttp.ClientSession() as session:
+        tasks = [_run_single(idx, row, session) for idx, row in df.iterrows()]
+        for coro in asyncio.as_completed(tasks):
+            result = await coro
+            all_results.append(result)
+
+    logger.info("🏁 全部异步测试完成")
     return all_results
 
 def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord):
@@ -132,7 +135,7 @@ def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord):
     input_dify_url = testrecord.dify_api_url
     input_dify_api_key = testrecord.dify_api_key
     input_query = testrecord.chatflow_query
-    input_dify_username = testrecord.dify_username
+    input_username = testrecord.dify_username
     input_dify_test_file = Path("uploads/" + testrecord.filename).resolve()
     input_concurrency = testrecord.concurrency
 
@@ -161,14 +164,24 @@ def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord):
     #     print(result)
     #
 
-    results = run_chatflow_tests_parallel(
+    # results = run_chatflow_tests_parallel(
+    #     df,
+    #     input_dify_url=input_dify_url,
+    #     input_dify_api_key=input_dify_api_key,
+    #     input_query=input_query,
+    #     input_dify_username=input_dify_url,
+    #     concurrency=input_concurrency,
+    # )
+
+    results = asyncio.run(run_chatflow_tests_async(
         df,
         input_dify_url=input_dify_url,
         input_dify_api_key=input_dify_api_key,
         input_query=input_query,
-        input_dify_username=input_dify_url,
-        concurrency=input_concurrency,  # 10个线程同时跑不同的行
-    )
+        input_dify_username=input_username,
+        concurrency=10
+    ))
+    print(results)
 
     ## input_data_dict
     return input_dify_test_file

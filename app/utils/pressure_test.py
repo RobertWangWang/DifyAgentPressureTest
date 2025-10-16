@@ -45,7 +45,6 @@ def single_test_chatflow_non_stream_pressure(
     end = time.time()
 
     json_text = json.loads(response.text)
-    print(json_text)
     tokens = encoding.encode(json_text["answer"])
     result_dict = {}
     result_dict["time_consumption"] = end - start
