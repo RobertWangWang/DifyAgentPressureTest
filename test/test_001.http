@@ -37,7 +37,7 @@ pending
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="concurrency"
 
-5
+64
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="dify_api_url"
 
@@ -49,7 +49,7 @@ app-Wj1ycNYycQIPMvKwsB1orT1s
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="dify_username"
 
-robertwang
+robertwang123
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="chatflow_query"
 
@@ -75,4 +75,4 @@ DELETE {{base_url}}/test_chatflow_records/d333ff0e-aa01-4f37-9262-f59fdb8e860a
 Accept: application/json
 
 ### 运行测试
-POST {{base_url}}/test_chatflow_records/run_test/33bae84e-f6d6-475d-98aa-ae1bb0ee06e1
+POST {{base_url}}/test_chatflow_records/run_test/45d69578-4401-44c8-b3cf-4cd5f1ecef65

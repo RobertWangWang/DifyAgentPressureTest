@@ -54,28 +54,6 @@ def single_test_chatflow_non_stream_pressure(
 
     return result_dict
 
-# inputs_dict = {
-#     "height": "176",
-#     "weight": "68",
-#     "gender": "Male",
-#     "age": "29",
-#     "name": "QWERT",
-#     "description": "sample_text0 sample_text1 sample_text2 sample_text3 sample_text4",
-#     "description_2": "sample_text0 sample_text1 sample_text2",
-#     "multi_choice_1": "choiceB",
-#     "multi_choice_2": "choice_D",
-#     "num1": 743,
-#     "num2": 215,
-#     "num3": 927
-# }
-# 
-# dify_url = "http://localhost/v1/chat-messages"
-# dify_api_key = "app-Wj1ycNYycQIPMvKwsB1orT1s"
-# query = "What is the sun?"
-# 
-# result = test_chatflow_non_stream_pressure(dify_url, dify_api_key, query, "robertwang", inputs_dict)
-# print(result)
-
 # 验证函数
 def validate_entry(entry: dict, para_df: pd.DataFrame):
     errors = []
