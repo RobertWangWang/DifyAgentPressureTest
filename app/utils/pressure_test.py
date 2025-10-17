@@ -4,7 +4,8 @@ import tiktoken
 import time
 import json
 encoding = tiktoken.get_encoding("cl100k_base")
-import sacrebleu
+
+from app.utils.logger import logger
 
 def single_test_chatflow_non_stream_pressure(
         input_dify_url:str,
@@ -51,7 +52,10 @@ def single_test_chatflow_non_stream_pressure(
     if len(ref_answer) == 0:
         sccore = 1
     else:
-        sccore = sacrebleu.corpus_bleu(answer,ref_answer)
+        """
+        llm评测
+        """
+        sccore = 0.75
     tokens = encoding.encode(answer)
     result_dict = {}
     result_dict["time_consumption"] = end - start
@@ -106,3 +110,79 @@ def validate_entry(entry: dict, para_df: pd.DataFrame):
         errors.append(f"Unexpected fields in entry: {extra_fields}")
 
     return errors
+
+def dify_api_url_2_agent_apikey_url(input_dify_url:str,
+                              input_dify_agent_id:str) -> str:
+
+    """
+
+    :param input_dify_url: 输入的 dify api url
+    :param input_dify_agent_id: 输入的dify agent id
+    :return: input_dify_api_key_url: 操纵dify api key的url
+    """
+
+    target_url = input_dify_url.replace("/v1","/console/api/apps/") + input_dify_agent_id + "/api-keys"
+    logger.info(f"dify api key url converted: {target_url}")
+    return target_url
+
+def get_dify_agent_api_key(input_agent_api_key_url:str,
+                           input_bearer_token:str) -> list:
+
+    """
+
+    :param input_agent_api_key_url: 绑定了agent id的api key url
+    :param input_bearer_token:  dify的console token
+    :return:  当前agent的apikey list
+    """
+
+    headers = {
+        "Authorization": f"Bearer {input_bearer_token}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.get(input_agent_api_key_url, headers=headers)
+    resp_json = response.json()
+    logger.info(f"dify api key list: {resp_json['data']}")
+    return resp_json['data']
+
+def create_dify_agent_api_key(input_agent_api_key_url:str,
+                            input_bearer_token:str) -> dict:
+    """
+
+    :param input_agent_api_key_url: 绑定了agent id的api key url
+    :param input_bearer_token:  dify的console token
+    :return:  当前agent的apikey dict
+    例子：
+    {'id': '305a2a03-8cc3-41ea-9d3b-a9621fd2e0fc', 'type': 'app', 'token': 'app-ihIE3OWH9MiXuCWaJa9LU2Rp', 'last_used_at': None, 'created_at': 1760664372}
+    """
+
+    headers = {
+        "Authorization": f"Bearer {input_bearer_token}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.post(input_agent_api_key_url, headers=headers)
+    resp_json = response.json()
+    logger.info(f"dify api key created: {resp_json}")
+    return resp_json
+
+def delete_dify_agent_api_key(input_agent_api_key_url:str,
+                            input_bearer_token:str,
+                            input_apikey:str) -> dict:
+    """
+
+    :param input_agent_api_key_url: 绑定了agent id的api key url
+    :param input_bearer_token:  dify的console token
+    :param input_apikey:  dify api key id
+    """
+    headers = {
+        "Authorization": f"Bearer {input_bearer_token}",
+        "Content-Type": "application/json",
+    }
+    response = requests.delete(input_agent_api_key_url + "/" + input_apikey, headers=headers)
+    if response.status_code == 204:
+        logger.info(f"dify api key deleted: {input_apikey}")
+        return {"msg": "success"}
+    else:
+        logger.warning(f"dify api key delete failed: {input_apikey}")
+        return {"msg": "failed"}

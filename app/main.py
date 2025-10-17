@@ -1,9 +1,11 @@
 from fastapi import FastAPI
 from app.api.test_chatflow_record_api import router as test_record_router
+from app.api.provider_models_api import router as provider_models_router
 from app.core.database import init_db
 app = FastAPI(title="Test Record Management")
 
 app.include_router(test_record_router)
+app.include_router(provider_models_router)
 
 init_db()
 # 打印所有路由

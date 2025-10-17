@@ -57,7 +57,11 @@ class TestRecord(Base):
 
     dify_api_url: Mapped[str] = mapped_column(String(512), nullable=False)
 
-    dify_api_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    dify_bearer_token: Mapped[str] = mapped_column(String(512), nullable=False)
+
+    dify_test_agent_id: Mapped[str] = mapped_column(String(256), nullable=False)
+
+    dify_api_key: Mapped[str] = mapped_column(String(256), nullable=True)
 
     dify_username: Mapped[str] = mapped_column(String(256), nullable=False)
 

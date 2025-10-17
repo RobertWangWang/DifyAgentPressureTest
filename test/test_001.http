@@ -43,9 +43,13 @@ Content-Disposition: form-data; name="dify_api_url"
 
 http://localhost/v1
 --WebKitFormBoundary7MA4YWxkTrZu0gW
-Content-Disposition: form-data; name="dify_api_key"
+Content-Disposition: form-data; name="dify_test_agent_id"
 
-app-Wj1ycNYycQIPMvKwsB1orT1s
+b35f8cb8-0f9a-4e03-87bf-9f090a3fb589
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="dify_bearer_token"
+
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiZmRkZjdiYmQtNWM3NC00Nzc0LTgxMDUtYTE1ZTMxY2I4MTVjIiwiZXhwIjoxNzYwNjc0Njg2LCJpc3MiOiJTRUxGX0hPU1RFRCIsInN1YiI6IkNvbnNvbGUgQVBJIFBhc3Nwb3J0In0.zXPlqaye9DxgR-AdoPoY35A_1Z_5inZiCVk7Fg8wY34
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="dify_username"
 
@@ -55,6 +59,7 @@ Content-Disposition: form-data; name="chatflow_query"
 
 What is the capital of France?
 --WebKitFormBoundary7MA4YWxkTrZu0gW--
+
 
 ###
 
@@ -75,4 +80,7 @@ DELETE {{base_url}}/test_chatflow_records/d333ff0e-aa01-4f37-9262-f59fdb8e860a
 Accept: application/json
 
 ### 运行测试
-POST {{base_url}}/test_chatflow_records/run_test/45d69578-4401-44c8-b3cf-4cd5f1ecef65
+POST {{base_url}}/test_chatflow_records/run_test/e620792b-dcb7-4bcb-b569-3366cb0c1da8
+
+### 获取所有模型
+GET {{base_url}}/provider_models/
