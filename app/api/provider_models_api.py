@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -78,8 +78,9 @@ def get_provider_model(model_id: int, db: Session = Depends(get_db)):
 # === POST 查询接口 ===
 @router.post("/query", response_model=List[ProviderModelRead])
 def query_provider_models(
-    body: ProviderQueryRequest,
-    db: Session = Depends(get_db),
+        request: Request,
+        body: ProviderQueryRequest,
+        db: Session = Depends(get_db),
 ):
     """
     根据 provider_name 与 model_name 同时查询匹配的模型
@@ -98,7 +99,8 @@ def query_provider_models(
         .all()
     )
 
-    llm_connection_test(candidate_models= models)
+    llm = llm_connection_test(candidate_models= models)
+    request.session['llm'] = llm
     # 不抛 404，返回空列表更友好
     return models
 

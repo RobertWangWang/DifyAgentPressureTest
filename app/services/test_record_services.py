@@ -4,6 +4,7 @@ import requests
 import numpy as np
 from rouge_score import rouge_scorer
 import sacrebleu
+from fastapi import Request
 
 from app.utils.pressure_test import single_test_chatflow_non_stream_pressure,validate_entry
 from app.utils.logger import logger
@@ -87,7 +88,8 @@ async def run_chatflow_tests_async(
     input_dify_api_key: str,
     input_query: str,
     input_dify_username: str,
-    concurrency: int = 10
+    llm,
+    concurrency: int = 10,
 ):
     """
     使用 asyncio 实现异步限并发执行测试任务。
@@ -106,11 +108,12 @@ async def run_chatflow_tests_async(
                 # 如果你的函数是同步的，可以使用 asyncio.to_thread 包装：
                 result = await asyncio.to_thread(
                     single_test_chatflow_non_stream_pressure,
-                    input_dify_url,
-                    input_dify_api_key,
-                    input_query,
-                    input_dify_username,
-                    row_dict
+                    input_dify_url=input_dify_url,
+                    input_dify_api_key=input_dify_api_key,
+                    input_query=input_query,
+                    input_dify_username=input_dify_username,
+                    input_data_dict=row_dict,
+                    llm=llm
                 )
                 logger.success(f"✅ [Row {index + 1}] 测试完成: {result}")
                 return result
@@ -129,7 +132,7 @@ async def run_chatflow_tests_async(
     logger.info("🏁 全部异步测试完成")
     return all_results
 
-def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord):
+def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord,request: Request):
 
     input_dify_url = testrecord.dify_api_url
     input_dify_api_key = testrecord.dify_api_key
@@ -163,22 +166,18 @@ def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord):
     #     print(result)
     #
 
-    # results = run_chatflow_tests_parallel(
-    #     df,
-    #     input_dify_url=input_dify_url,
-    #     input_dify_api_key=input_dify_api_key,
-    #     input_query=input_query,
-    #     input_dify_username=input_dify_url,
-    #     concurrency=input_concurrency,
-    # )
+    ### 3.获取评分模型
+    llm = request.session.get("llm")
 
+    ### 4.异步多线程测试
     results = asyncio.run(run_chatflow_tests_async(
         df,
         input_dify_url=input_dify_url,
         input_dify_api_key=input_dify_api_key,
         input_query=input_query,
         input_dify_username=input_username,
-        concurrency=10
+        concurrency=input_concurrency,
+        llm=llm
     ))
 
     for ele in results:

@@ -161,9 +161,9 @@ def delete_record(uuid_str: str, db: Session = Depends(get_db)):
 
 
 @router.post("/run_test/{uuid_str}", status_code=status.HTTP_200_OK)
-def run_record(uuid_str: str, db: Session = Depends(get_db)):
+def run_record(request: Request,uuid_str: str, db: Session = Depends(get_db)):
     existing = TestRecordCRUD.get_by_uuid(db, uuid_str)
     if existing is None:
         raise HTTPException(status_code=404, detail="Record not found")
-    result = test_chatflow_non_stream_pressure_wrapper(existing)
+    result = test_chatflow_non_stream_pressure_wrapper(existing,request)
     return result

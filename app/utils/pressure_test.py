@@ -6,13 +6,16 @@ import json
 encoding = tiktoken.get_encoding("cl100k_base")
 
 from app.utils.logger import logger
+from app.utils.provider_models import send_message_volcengine_ark,send_message_openai_compatible,send_message_aliyun_dashscope
 
 def single_test_chatflow_non_stream_pressure(
         input_dify_url:str,
         input_dify_api_key:str,
         input_query:str,
         input_dify_username: str,
-        input_data_dict:dict = None,)-> dict:
+        llm,
+        input_data_dict:dict = None,
+        )-> dict:
 
     """
     :param input_dify_url: dify agent 的 url
@@ -55,7 +58,21 @@ def single_test_chatflow_non_stream_pressure(
         """
         llm评测
         """
-        sccore = 0.75
+        llm_record = llm['llm_record']
+        llm_func = llm['llm_func']
+        if llm_func == send_message_aliyun_dashscope.__name__:
+            llm_func = send_message_aliyun_dashscope
+        elif llm_func == send_message_volcengine_ark.__name__:
+            llm_func = send_message_volcengine_ark
+        elif llm_func == send_message_openai_compatible.__name__:
+            llm_func = send_message_openai_compatible
+        llm_response = llm_func(llm_record.get('config'),answer, ref_answer)
+        llm_scorrer = llm_response['json']["choices"][0]["message"]["content"]
+        try:
+            sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
+        except Exception as e:
+            logger.error(e)
+            logger.error(f"llm_scorrer: {llm_scorrer}")
     tokens = encoding.encode(answer)
     result_dict = {}
     result_dict["time_consumption"] = end - start
