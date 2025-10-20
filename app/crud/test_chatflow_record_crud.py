@@ -1,8 +1,9 @@
 from typing import List, Optional, Any, Dict
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from app.models import TestRecord, TestStatus
+from app.core.database import SessionLocal
 
 
 class TestRecordCRUD:
@@ -103,3 +104,29 @@ class TestRecordCRUD:
             raise e
 
         return result.rowcount is not None and result.rowcount > 0
+
+    @staticmethod
+    def increment_success_count(uuid_str: str):
+        with SessionLocal() as session:
+            session.execute(
+                text("""
+                    UPDATE test_chatflow_records
+                    SET success_count = success_count + 1
+                    WHERE uuid = :uuid_str
+                """),
+                {"uuid_str": uuid_str}
+            )
+            session.commit()
+
+    @staticmethod
+    def increment_failure_count(uuid_str: str):
+        with SessionLocal() as session:
+            session.execute(
+                text("""
+                    UPDATE test_chatflow_records
+                    SET failure_count = failure_count + 1
+                    WHERE uuid = :uuid_str
+                """),
+                {"uuid_str": uuid_str}
+            )
+            session.commit()

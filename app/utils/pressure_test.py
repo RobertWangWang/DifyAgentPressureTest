@@ -2,8 +2,6 @@ import requests
 import pandas as pd
 import time
 import json
-
-from nltk.sem.chat80 import continent
 from transformers import AutoTokenizer
 
 from app.utils.logger import logger
@@ -52,39 +50,49 @@ def single_test_chatflow_non_stream_pressure(
     response = requests.post(input_dify_url+"/chat-messages", headers=headers, data=json.dumps(payload))
     end = time.time()
 
-    json_text = json.loads(response.text)
-    answer = json_text["answer"]
-    ref_answer = input_data_dict.get("ref_answer","")
-    if len(ref_answer) == 0:
-        sccore = 1
-    else:
-        """
-        llm评测
-        """
-        llm_record = llm['llm_record']
-        llm_func = llm['llm_func']
-        if llm_func == send_message_aliyun_dashscope.__name__:
-            llm_func = send_message_aliyun_dashscope
-        elif llm_func == send_message_volcengine_ark.__name__:
-            llm_func = send_message_volcengine_ark
-        elif llm_func == send_message_openai_compatible.__name__:
-            llm_func = send_message_openai_compatible
-        llm_response = llm_func(llm_record.get('config'),answer, ref_answer)
-        llm_scorrer = llm_response['json']["choices"][0]["message"]["content"]
-        try:
-            sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
-        except Exception as e:
-            logger.error(e)
-            logger.error(f"llm_scorrer: {llm_scorrer}")
-    encoded = tokenizer(answer, add_special_tokens=False)
-    token_ids = encoded["input_ids"]
-    result_dict = {}
-    result_dict["time_consumption"] = end - start
-    result_dict["token_num"] = len(token_ids)
-    result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"]
-    result_dict["score"] = sccore['score']
+    try:
+        json_text = json.loads(response.text)
+        answer = json_text["answer"]
+        ref_answer = input_data_dict.get("ref_answer","")
+        if len(ref_answer) == 0:
+            sccore = 100
+        else:
+            """
+            llm评测
+            """
+            llm_record = llm['llm_record']
+            llm_func = llm['llm_func']
+            if llm_func == send_message_aliyun_dashscope.__name__:
+                llm_func = send_message_aliyun_dashscope
+            elif llm_func == send_message_volcengine_ark.__name__:
+                llm_func = send_message_volcengine_ark
+            elif llm_func == send_message_openai_compatible.__name__:
+                llm_func = send_message_openai_compatible
+            llm_response = llm_func(llm_record.get('config'),answer, ref_answer)
+            llm_scorrer = llm_response['json']["choices"][0]["message"]["content"]
+            try:
+                sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
+            except Exception as e:
+                logger.error(e)
+                logger.error(f"llm_scorrer: {llm_scorrer}")
+        encoded = tokenizer(answer, add_special_tokens=False)
+        token_ids = encoded["input_ids"]
+        result_dict = {}
+        result_dict["time_consumption"] = end - start
+        result_dict["token_num"] = len(token_ids)
+        result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"]
+        result_dict["score"] = sccore['score']
 
-    return result_dict
+        return result_dict
+    except Exception as e:
+        logger.error(e)
+        logger.error(f"response: {response.text}")
+        result_dict = {}
+        result_dict["time_consumption"] = end - start
+        result_dict["token_num"] = 0
+        result_dict["TPS"] = 0
+        result_dict["score"] = 0
+        return result_dict
 
 # 验证函数
 def validate_entry(entry: dict, para_df: pd.DataFrame):

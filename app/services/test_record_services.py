@@ -3,13 +3,14 @@ import pandas as pd
 import requests
 import numpy as np
 from fastapi import Request
-from typing import Optional, Callable, Dict, Any, List, Union
 import asyncio
 import aiohttp
+from sqlalchemy.orm import Session
 
 from app.utils.pressure_test import single_test_chatflow_non_stream_pressure,validate_entry
 from app.utils.logger import logger
-from app.models.test_chatflow_record import TestRecord
+from app.models.test_chatflow_record import TestRecord,TestStatus
+from app.crud.test_chatflow_record_crud import TestRecordCRUD
 
 def align_dify_input_types(df_data: pd.DataFrame, df_schema: pd.DataFrame) -> pd.DataFrame:
     """
@@ -82,12 +83,14 @@ def get_agent_input_para_dict(input_dify_url:str,input_dify_api_key:str)->pd.Dat
 
 async def run_chatflow_tests_async(
     df,
+    input_uuid:str,
     input_dify_url: str,
     input_dify_api_key: str,
     input_query: str,
     input_dify_username: str,
     llm,
     concurrency: int = 10,
+
 ):
     """
     使用 asyncio 实现异步限并发执行测试任务。
@@ -113,9 +116,15 @@ async def run_chatflow_tests_async(
                     input_data_dict=row_dict,
                     llm=llm
                 )
+                await asyncio.to_thread(
+                    TestRecordCRUD.increment_success_count, input_uuid
+                )
                 logger.success(f"✅ [Row {index + 1}] 测试完成: {result}")
                 return result
             except Exception as e:
+                await asyncio.to_thread(
+                    TestRecordCRUD.increment_failure_count,  input_uuid
+                )
                 logger.error(f"❌ [Row {index + 1}] 出错: {e}")
                 return {"index": index, "error": str(e)}
 
@@ -127,11 +136,11 @@ async def run_chatflow_tests_async(
             result = await coro
             all_results.append(result)
 
-    logger.info("🏁 全部异步测试完成")
+    logger.info(f"🏁 全部异步测试完成")
     return all_results
 
 async def test_chatflow_non_stream_pressure_wrapper(
-    testrecord: TestRecord, request: Request
+    testrecord: TestRecord, request: Request, db:Session
 ):
 
     input_dify_url = testrecord.dify_api_url
@@ -169,9 +178,14 @@ async def test_chatflow_non_stream_pressure_wrapper(
     ### 3.获取评分模型
     llm = request.session.get("llm")
 
+    ### 3.1 更新当前任务状态为runnning
+    update_data_dict = {"status":TestStatus.RUNNING}
+    TestRecordCRUD.update_by_uuid(db, testrecord.uuid, **update_data_dict)
+
     ### 4.异步多线程测试
     results = await run_chatflow_tests_async(
         df,
+        input_uuid = testrecord.uuid,
         input_dify_url=input_dify_url,
         input_dify_api_key=input_dify_api_key,
         input_query=input_query,
@@ -183,6 +197,7 @@ async def test_chatflow_non_stream_pressure_wrapper(
     avg_time_consumption = sum([ele.get("time_consumption") for ele in results]) / len(
         results
     )
+    total_time_consumption = sum([ele.get("time_consumption") for ele in results])
     avg_token_num = sum([ele.get("token_num") for ele in results]) / len(results)
     avg_TPS = sum([ele.get("TPS") for ele in results]) / len(results)
     avg_score = sum([ele.get("score") for ele in results]) / len(results)
@@ -195,6 +210,15 @@ async def test_chatflow_non_stream_pressure_wrapper(
     }
 
     logger.success(f"测试结果: {result_dict}")
-
+    update_data_dict = {
+        "status": TestStatus.SUCCESS,
+        "duration": total_time_consumption,
+        "result": result_dict,
+    }
+    TestRecordCRUD.update_by_uuid(
+        session=db,
+        uuid_str=testrecord.uuid,
+        **update_data_dict
+    )
     ## input_data_dict
     return result_dict
