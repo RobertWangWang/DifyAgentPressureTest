@@ -179,10 +179,7 @@ async def run_chatflow_tests_async(
     return all_results
 
 async def test_chatflow_non_stream_pressure_wrapper(
-    testrecord: TestRecord,
-    *,
-    llm=None,
-    progress_callback: Optional[ProgressCallback] = None,
+    testrecord: TestRecord, request: Request
 ):
 
     input_dify_url = testrecord.dify_api_url
@@ -234,7 +231,6 @@ async def test_chatflow_non_stream_pressure_wrapper(
         input_dify_username=input_username,
         concurrency=input_concurrency,
         llm=llm,
-        progress_callback=progress_callback,
     )
 
     avg_time_consumption = sum([ele.get("time_consumption") for ele in results]) / len(
