@@ -1,16 +1,24 @@
 import requests
 import pandas as pd
-import tiktoken
 import time
 import json
-encoding = tiktoken.get_encoding("cl100k_base")
+
+from nltk.sem.chat80 import continent
+from transformers import AutoTokenizer
+
+from app.utils.logger import logger
+from app.utils.provider_models import send_message_volcengine_ark,send_message_openai_compatible,send_message_aliyun_dashscope
+
+tokenizer = AutoTokenizer.from_pretrained("/home/robertwang/PycharmProjects/DifyAgentPressureTest/app/utils/tokenizer", local_files_only=True)
 
 def single_test_chatflow_non_stream_pressure(
         input_dify_url:str,
         input_dify_api_key:str,
         input_query:str,
         input_dify_username: str,
-        input_data_dict:dict = None,)-> dict:
+        llm,
+        input_data_dict:dict = None,
+        )-> dict:
 
     """
     :param input_dify_url: dify agent 的 url
@@ -41,39 +49,42 @@ def single_test_chatflow_non_stream_pressure(
     }
 
     start = time.time()
-    response = requests.post(input_dify_url, headers=headers, data=json.dumps(payload))
+    response = requests.post(input_dify_url+"/chat-messages", headers=headers, data=json.dumps(payload))
     end = time.time()
 
     json_text = json.loads(response.text)
-    tokens = encoding.encode(json_text["answer"])
+    answer = json_text["answer"]
+    ref_answer = input_data_dict.get("ref_answer","")
+    if len(ref_answer) == 0:
+        sccore = 1
+    else:
+        """
+        llm评测
+        """
+        llm_record = llm['llm_record']
+        llm_func = llm['llm_func']
+        if llm_func == send_message_aliyun_dashscope.__name__:
+            llm_func = send_message_aliyun_dashscope
+        elif llm_func == send_message_volcengine_ark.__name__:
+            llm_func = send_message_volcengine_ark
+        elif llm_func == send_message_openai_compatible.__name__:
+            llm_func = send_message_openai_compatible
+        llm_response = llm_func(llm_record.get('config'),answer, ref_answer)
+        llm_scorrer = llm_response['json']["choices"][0]["message"]["content"]
+        try:
+            sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
+        except Exception as e:
+            logger.error(e)
+            logger.error(f"llm_scorrer: {llm_scorrer}")
+    encoded = tokenizer(answer, add_special_tokens=False)
+    token_ids = encoded["input_ids"]
     result_dict = {}
     result_dict["time_consumption"] = end - start
-    result_dict["token_num"] = len(tokens)
+    result_dict["token_num"] = len(token_ids)
     result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"]
+    result_dict["score"] = sccore['score']
 
     return result_dict
-
-# inputs_dict = {
-#     "height": "176",
-#     "weight": "68",
-#     "gender": "Male",
-#     "age": "29",
-#     "name": "QWERT",
-#     "description": "sample_text0 sample_text1 sample_text2 sample_text3 sample_text4",
-#     "description_2": "sample_text0 sample_text1 sample_text2",
-#     "multi_choice_1": "choiceB",
-#     "multi_choice_2": "choice_D",
-#     "num1": 743,
-#     "num2": 215,
-#     "num3": 927
-# }
-# 
-# dify_url = "http://localhost/v1/chat-messages"
-# dify_api_key = "app-Wj1ycNYycQIPMvKwsB1orT1s"
-# query = "What is the sun?"
-# 
-# result = test_chatflow_non_stream_pressure(dify_url, dify_api_key, query, "robertwang", inputs_dict)
-# print(result)
 
 # 验证函数
 def validate_entry(entry: dict, para_df: pd.DataFrame):
@@ -117,6 +128,85 @@ def validate_entry(entry: dict, para_df: pd.DataFrame):
     defined_vars = set(para_df["variable"].tolist())
     extra_fields = set(entry.keys()) - defined_vars
     if extra_fields:
-        errors.append(f"Unexpected fields in entry: {extra_fields}")
+        if 'ref_answer' in extra_fields:
+            pass
+        else:
+            errors.append(f"Unexpected fields in entry: {extra_fields}")
 
     return errors
+
+def dify_api_url_2_agent_apikey_url(input_dify_url:str,
+                              input_dify_agent_id:str) -> str:
+
+    """
+
+    :param input_dify_url: 输入的 dify api url
+    :param input_dify_agent_id: 输入的dify agent id
+    :return: input_dify_api_key_url: 操纵dify api key的url
+    """
+
+    target_url = input_dify_url.replace("/v1","/console/api/apps/") + input_dify_agent_id + "/api-keys"
+    logger.info(f"dify api key url converted: {target_url}")
+    return target_url
+
+def get_dify_agent_api_key(input_agent_api_key_url:str,
+                           input_bearer_token:str) -> list:
+
+    """
+
+    :param input_agent_api_key_url: 绑定了agent id的api key url
+    :param input_bearer_token:  dify的console token
+    :return:  当前agent的apikey list
+    """
+
+    headers = {
+        "Authorization": f"Bearer {input_bearer_token}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.get(input_agent_api_key_url, headers=headers)
+    resp_json = response.json()
+    logger.info(f"dify api key list: {resp_json['data']}")
+    return resp_json['data']
+
+def create_dify_agent_api_key(input_agent_api_key_url:str,
+                            input_bearer_token:str) -> dict:
+    """
+
+    :param input_agent_api_key_url: 绑定了agent id的api key url
+    :param input_bearer_token:  dify的console token
+    :return:  当前agent的apikey dict
+    例子：
+    {'id': '305a2a03-8cc3-41ea-9d3b-a9621fd2e0fc', 'type': 'app', 'token': 'app-ihIE3OWH9MiXuCWaJa9LU2Rp', 'last_used_at': None, 'created_at': 1760664372}
+    """
+
+    headers = {
+        "Authorization": f"Bearer {input_bearer_token}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.post(input_agent_api_key_url, headers=headers)
+    resp_json = response.json()
+    logger.info(f"dify api key created: {resp_json}")
+    return resp_json
+
+def delete_dify_agent_api_key(input_agent_api_key_url:str,
+                            input_bearer_token:str,
+                            input_apikey:str) -> dict:
+    """
+
+    :param input_agent_api_key_url: 绑定了agent id的api key url
+    :param input_bearer_token:  dify的console token
+    :param input_apikey:  dify api key id
+    """
+    headers = {
+        "Authorization": f"Bearer {input_bearer_token}",
+        "Content-Type": "application/json",
+    }
+    response = requests.delete(input_agent_api_key_url + "/" + input_apikey, headers=headers)
+    if response.status_code == 204:
+        logger.info(f"dify api key deleted: {input_apikey}")
+        return {"msg": "success"}
+    else:
+        logger.warning(f"dify api key delete failed: {input_apikey}")
+        return {"msg": "failed"}

@@ -1,0 +1,19 @@
+### Environment Variables Declaration
+@base_url = http://127.0.0.1:8000
+
+### 获取所有模型
+GET {{base_url}}/provider_models/
+
+### 获取单个模型
+GET {{base_url}}/provider_models/1
+
+### 根据供应商名字和模型名字获取模型
+### 创建评估用的数据集
+POST {{base_url}}/provider_models/query
+accept: application/json
+Content-Type: application/json
+
+{
+  "model_name": "DeepSeek-V3",
+  "provider_name": "volcengine"
+}

@@ -1,0 +1,63 @@
+### Environment Variables Declaration
+@base_url = http://127.0.0.1:8000
+
+### Create a new record (file upload required)
+POST {{base_url}}/test_chatflow_records/
+Content-Type: multipart/form-data; boundary=WebKitFormBoundary7MA4YWxkTrZu0gW
+
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="file"; filename="test2.csv"
+Content-Type: text/csv
+
+< test2.csv
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="status"
+
+init
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="duration"
+
+10
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="result"
+
+pending
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="concurrency"
+
+64
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="dify_api_url"
+
+http://localhost/v1
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="dify_test_agent_id"
+
+b35f8cb8-0f9a-4e03-87bf-9f090a3fb589
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="dify_bearer_token"
+
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiZmRkZjdiYmQtNWM3NC00Nzc0LTgxMDUtYTE1ZTMxY2I4MTVjIiwiZXhwIjoxNzYwOTM4MjMzLCJpc3MiOiJTRUxGX0hPU1RFRCIsInN1YiI6IkNvbnNvbGUgQVBJIFBhc3Nwb3J0In0.uEhB_5RT2YuZQHFNdjXWKwgGOXVa9iYfABGGyduqxfA
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="dify_username"
+
+robertwang123
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="chatflow_query"
+
+What is the capital of France?
+--WebKitFormBoundary7MA4YWxkTrZu0gW--
+
+### 根据供应商名字和模型名字获取模型
+### 创建评估用的数据集
+POST {{base_url}}/provider_models/query
+accept: application/json
+Content-Type: application/json
+
+{
+  "model_name": "DeepSeek-V3",
+  "provider_name": "volcengine"
+}
+
+### 运行测试
+POST {{base_url}}/test_chatflow_records/run_test/2bb5b6e6-335c-4f9d-9b56-316916cb032a

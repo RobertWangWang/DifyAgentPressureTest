@@ -41,7 +41,7 @@ class TestRecord(Base):
         nullable=False
     )
 
-    test_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
 
     status: Mapped[TestStatus] = mapped_column(
         SqlEnum(TestStatus, name="test_status_enum"),
@@ -57,7 +57,11 @@ class TestRecord(Base):
 
     dify_api_url: Mapped[str] = mapped_column(String(512), nullable=False)
 
-    dify_api_key: Mapped[str] = mapped_column(String(256), nullable=False)
+    dify_bearer_token: Mapped[str] = mapped_column(String(512), nullable=False)
+
+    dify_test_agent_id: Mapped[str] = mapped_column(String(256), nullable=False)
+
+    dify_api_key: Mapped[str] = mapped_column(String(256), nullable=True)
 
     dify_username: Mapped[str] = mapped_column(String(256), nullable=False)
 
@@ -66,5 +70,5 @@ class TestRecord(Base):
     def __repr__(self) -> str:
         return (
             f"<TestRecord(uuid='{self.uuid}', status='{self.status}', "
-            f"duration={self.duration}, file='{self.test_filename}')>"
+            f"duration={self.duration}, file='{self.filename}')>"
         )
