@@ -1,8 +1,13 @@
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional
+
+import asyncio
+import json
+from time import perf_counter
 
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -15,6 +20,7 @@ from app.schemas.test_record_schema import (
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.services.test_record_services import test_chatflow_non_stream_pressure_wrapper
+from app.models.test_chatflow_record import TestStatus
 
 # ✅ 导入 util 工具函数
 from app.utils.pressure_test import (
@@ -161,9 +167,70 @@ def delete_record(uuid_str: str, db: Session = Depends(get_db)):
 
 
 @router.post("/run_test/{uuid_str}", status_code=status.HTTP_200_OK)
-def run_record(request: Request,uuid_str: str, db: Session = Depends(get_db)):
-    existing = TestRecordCRUD.get_by_uuid(db, uuid_str)
+async def run_record(
+    request: Request, uuid_str: str, db: Session = Depends(get_db)
+):
+    existing = await run_in_threadpool(TestRecordCRUD.get_by_uuid, db, uuid_str)
     if existing is None:
         raise HTTPException(status_code=404, detail="Record not found")
-    result = test_chatflow_non_stream_pressure_wrapper(existing,request)
-    return result
+
+    await run_in_threadpool(
+        TestRecordCRUD.update_by_uuid, db, uuid_str, status=TestStatus.RUNNING
+    )
+
+    llm = request.session.get("llm")
+    started_at = perf_counter()
+
+    async def _progress_callback(payload: Dict[str, Any]) -> None:
+        logger.info(f"Record {uuid_str} progress: {payload}")
+
+    def _finalize_record(
+        status: TestStatus,
+        *,
+        result_payload: Optional[Dict[str, Any]] = None,
+        duration: Optional[int] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        session = SessionLocal()
+        try:
+            update_kwargs: Dict[str, Any] = {"status": status}
+            if duration is not None:
+                update_kwargs["duration"] = duration
+
+            if result_payload is not None:
+                update_kwargs["result"] = json.dumps(
+                    result_payload, ensure_ascii=False
+                )
+            elif error_message is not None:
+                update_kwargs["result"] = error_message
+
+            TestRecordCRUD.update_by_uuid(session, uuid_str, **update_kwargs)
+        finally:
+            session.close()
+
+    async def _background_run() -> None:
+        try:
+            result = await test_chatflow_non_stream_pressure_wrapper(
+                existing,
+                llm=llm,
+                progress_callback=_progress_callback,
+            )
+            logger.info(f"Record {uuid_str} completed: {result}")
+            duration = int(perf_counter() - started_at)
+            await asyncio.to_thread(
+                _finalize_record,
+                TestStatus.INIT,
+                result_payload=result,
+                duration=duration,
+            )
+        except Exception as exc:  # pragma: no cover - background logging
+            logger.exception(f"Record {uuid_str} failed during execution: {exc}")
+            await asyncio.to_thread(
+                _finalize_record,
+                TestStatus.FAILED,
+                error_message=str(exc),
+            )
+
+    asyncio.create_task(_background_run())
+
+    return {"status": "accepted", "uuid": uuid_str}
