@@ -1,12 +1,15 @@
 import requests
 import pandas as pd
-import tiktoken
 import time
 import json
-encoding = tiktoken.get_encoding("cl100k_base")
+
+from nltk.sem.chat80 import continent
+from transformers import AutoTokenizer
 
 from app.utils.logger import logger
 from app.utils.provider_models import send_message_volcengine_ark,send_message_openai_compatible,send_message_aliyun_dashscope
+
+tokenizer = AutoTokenizer.from_pretrained("/home/robertwang/PycharmProjects/DifyAgentPressureTest/app/utils/tokenizer", local_files_only=True)
 
 def single_test_chatflow_non_stream_pressure(
         input_dify_url:str,
@@ -73,12 +76,13 @@ def single_test_chatflow_non_stream_pressure(
         except Exception as e:
             logger.error(e)
             logger.error(f"llm_scorrer: {llm_scorrer}")
-    tokens = encoding.encode(answer)
+    encoded = tokenizer(answer, add_special_tokens=False)
+    token_ids = encoded["input_ids"]
     result_dict = {}
     result_dict["time_consumption"] = end - start
-    result_dict["token_num"] = len(tokens)
+    result_dict["token_num"] = len(token_ids)
     result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"]
-    result_dict["score"] = sccore
+    result_dict["score"] = sccore['score']
 
     return result_dict
 
@@ -124,7 +128,10 @@ def validate_entry(entry: dict, para_df: pd.DataFrame):
     defined_vars = set(para_df["variable"].tolist())
     extra_fields = set(entry.keys()) - defined_vars
     if extra_fields:
-        errors.append(f"Unexpected fields in entry: {extra_fields}")
+        if 'ref_answer' in extra_fields:
+            pass
+        else:
+            errors.append(f"Unexpected fields in entry: {extra_fields}")
 
     return errors
 

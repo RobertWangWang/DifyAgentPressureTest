@@ -2,9 +2,8 @@ from pathlib import Path
 import pandas as pd
 import requests
 import numpy as np
-from rouge_score import rouge_scorer
-import sacrebleu
 from fastapi import Request
+from typing import Optional, Callable, Dict, Any, List, Union
 
 from app.utils.pressure_test import single_test_chatflow_non_stream_pressure,validate_entry
 from app.utils.logger import logger
@@ -132,6 +131,8 @@ async def run_chatflow_tests_async(
     logger.info("🏁 全部异步测试完成")
     return all_results
 
+CallbackType = Callable[[Dict[str, Any]], Union[None, asyncio.Future]]
+
 def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord,request: Request):
 
     input_dify_url = testrecord.dify_api_url
@@ -180,8 +181,19 @@ def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord,request: Req
         llm=llm
     ))
 
-    for ele in results:
-        print(ele)
+    avg_time_consumption = sum([ele.get("time_consumption") for ele in results]) / len(results)
+    avg_token_num = sum([ele.get("token_num") for ele in results]) / len(results)
+    avg_TPS = sum([ele.get("TPS") for ele in results]) / len(results)
+    avg_score = sum([ele.get("score") for ele in results]) / len(results)
+
+    result_dict = {
+        "avg_time_consumption":avg_time_consumption,
+        "avg_token_num":avg_token_num,
+        "avg_TPS":avg_TPS,
+        "avg_score":avg_score
+    }
+
+    logger.success(f"测试结果: {result_dict}")
 
     ## input_data_dict
-    return input_dify_test_file
+    return result_dict
