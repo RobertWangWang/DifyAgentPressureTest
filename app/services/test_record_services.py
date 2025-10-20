@@ -4,6 +4,8 @@ import requests
 import numpy as np
 from fastapi import Request
 from typing import Optional, Callable, Dict, Any, List, Union
+import asyncio
+import aiohttp
 
 from app.utils.pressure_test import single_test_chatflow_non_stream_pressure,validate_entry
 from app.utils.logger import logger
@@ -78,9 +80,6 @@ def get_agent_input_para_dict(input_dify_url:str,input_dify_api_key:str)->pd.Dat
 
     return para_df
 
-import asyncio
-import aiohttp
-
 async def run_chatflow_tests_async(
     df,
     input_dify_url: str,
@@ -130,8 +129,6 @@ async def run_chatflow_tests_async(
 
     logger.info("🏁 全部异步测试完成")
     return all_results
-
-CallbackType = Callable[[Dict[str, Any]], Union[None, asyncio.Future]]
 
 def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord,request: Request):
 
