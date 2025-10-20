@@ -64,6 +64,10 @@ class TestRecord(Base):
 
     dify_api_key: Mapped[str] = mapped_column(String(256), nullable=True)
 
+    success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     dify_username: Mapped[str] = mapped_column(String(256), nullable=False)
 
     chatflow_query: Mapped[str] = mapped_column(Text, nullable=False)

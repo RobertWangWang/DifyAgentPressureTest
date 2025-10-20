@@ -2,8 +2,6 @@ import requests
 import pandas as pd
 import time
 import json
-
-from nltk.sem.chat80 import continent
 from transformers import AutoTokenizer
 
 from app.utils.logger import logger
@@ -57,7 +55,7 @@ def single_test_chatflow_non_stream_pressure(
         answer = json_text["answer"]
         ref_answer = input_data_dict.get("ref_answer","")
         if len(ref_answer) == 0:
-            sccore = 1
+            sccore = 100
         else:
             """
             llm评测

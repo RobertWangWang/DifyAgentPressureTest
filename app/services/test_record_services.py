@@ -83,12 +83,14 @@ def get_agent_input_para_dict(input_dify_url:str,input_dify_api_key:str)->pd.Dat
 
 async def run_chatflow_tests_async(
     df,
+    input_uuid:str,
     input_dify_url: str,
     input_dify_api_key: str,
     input_query: str,
     input_dify_username: str,
     llm,
     concurrency: int = 10,
+
 ):
     """
     使用 asyncio 实现异步限并发执行测试任务。
@@ -114,9 +116,15 @@ async def run_chatflow_tests_async(
                     input_data_dict=row_dict,
                     llm=llm
                 )
+                await asyncio.to_thread(
+                    TestRecordCRUD.increment_success_count, input_uuid
+                )
                 logger.success(f"✅ [Row {index + 1}] 测试完成: {result}")
                 return result
             except Exception as e:
+                await asyncio.to_thread(
+                    TestRecordCRUD.increment_failure_count,  input_uuid
+                )
                 logger.error(f"❌ [Row {index + 1}] 出错: {e}")
                 return {"index": index, "error": str(e)}
 
@@ -128,7 +136,7 @@ async def run_chatflow_tests_async(
             result = await coro
             all_results.append(result)
 
-    logger.info("🏁 全部异步测试完成")
+    logger.info(f"🏁 全部异步测试完成")
     return all_results
 
 async def test_chatflow_non_stream_pressure_wrapper(
@@ -177,6 +185,7 @@ async def test_chatflow_non_stream_pressure_wrapper(
     ### 4.异步多线程测试
     results = await run_chatflow_tests_async(
         df,
+        input_uuid = testrecord.uuid,
         input_dify_url=input_dify_url,
         input_dify_api_key=input_dify_api_key,
         input_query=input_query,
