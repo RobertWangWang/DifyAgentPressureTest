@@ -130,7 +130,9 @@ async def run_chatflow_tests_async(
     logger.info("🏁 全部异步测试完成")
     return all_results
 
-def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord,request: Request):
+async def test_chatflow_non_stream_pressure_wrapper(
+    testrecord: TestRecord, request: Request
+):
 
     input_dify_url = testrecord.dify_api_url
     input_dify_api_key = testrecord.dify_api_key
@@ -140,54 +142,56 @@ def test_chatflow_non_stream_pressure_wrapper(testrecord:TestRecord,request: Req
     input_concurrency = testrecord.concurrency
 
     if input_dify_test_file.__str__().endswith(".csv"):
-        df = pd.read_csv(input_dify_test_file)
+        df = await asyncio.to_thread(pd.read_csv, input_dify_test_file)
     elif input_dify_test_file.__str__().endswith(".xlsx"):
-        df = pd.read_excel(input_dify_test_file,engine="openpyxl")
+        df = await asyncio.to_thread(
+            pd.read_excel, input_dify_test_file, engine="openpyxl"
+        )
+    else:
+        raise ValueError(
+            "Unsupported file type. Only .csv and .xlsx test files are supported."
+        )
 
     ### 1.获取智能体可输入的参数字典
-    para_df = get_agent_input_para_dict(input_dify_url,input_dify_api_key)
+    para_df = await asyncio.to_thread(
+        get_agent_input_para_dict, input_dify_url, input_dify_api_key
+    )
 
     df = align_dify_input_types(df, para_df)
 
     ### 2.验证用户上传的文件中的参数是否符合智能体的参数要求
-    for index,row in df.iterrows():
-
+    for _, row in df.iterrows():
         row_dict = row.to_dict()
         error = validate_entry(row_dict, para_df)
         if error:
             return {"error": error}
 
-    ### 3.单条测试
-    # for index,row in df.iterrows():
-    #     row_dict = row.to_dict()
-    #     result = single_test_chatflow_non_stream_pressure(input_dify_url, input_dify_api_key, input_query, input_dify_username, row_dict)
-    #     print(result)
-    #
-
     ### 3.获取评分模型
     llm = request.session.get("llm")
 
     ### 4.异步多线程测试
-    results = asyncio.run(run_chatflow_tests_async(
+    results = await run_chatflow_tests_async(
         df,
         input_dify_url=input_dify_url,
         input_dify_api_key=input_dify_api_key,
         input_query=input_query,
         input_dify_username=input_username,
         concurrency=input_concurrency,
-        llm=llm
-    ))
+        llm=llm,
+    )
 
-    avg_time_consumption = sum([ele.get("time_consumption") for ele in results]) / len(results)
+    avg_time_consumption = sum([ele.get("time_consumption") for ele in results]) / len(
+        results
+    )
     avg_token_num = sum([ele.get("token_num") for ele in results]) / len(results)
     avg_TPS = sum([ele.get("TPS") for ele in results]) / len(results)
     avg_score = sum([ele.get("score") for ele in results]) / len(results)
 
     result_dict = {
-        "avg_time_consumption":avg_time_consumption,
-        "avg_token_num":avg_token_num,
-        "avg_TPS":avg_TPS,
-        "avg_score":avg_score
+        "avg_time_consumption": avg_time_consumption,
+        "avg_token_num": avg_token_num,
+        "avg_TPS": avg_TPS,
+        "avg_score": avg_score,
     }
 
     logger.success(f"测试结果: {result_dict}")
