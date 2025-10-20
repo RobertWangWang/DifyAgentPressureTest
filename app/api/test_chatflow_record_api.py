@@ -3,6 +3,7 @@ from typing import List
 
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -161,9 +162,11 @@ def delete_record(uuid_str: str, db: Session = Depends(get_db)):
 
 
 @router.post("/run_test/{uuid_str}", status_code=status.HTTP_200_OK)
-def run_record(request: Request,uuid_str: str, db: Session = Depends(get_db)):
-    existing = TestRecordCRUD.get_by_uuid(db, uuid_str)
+async def run_record(
+    request: Request, uuid_str: str, db: Session = Depends(get_db)
+):
+    existing = await run_in_threadpool(TestRecordCRUD.get_by_uuid, db, uuid_str)
     if existing is None:
         raise HTTPException(status_code=404, detail="Record not found")
-    result = test_chatflow_non_stream_pressure_wrapper(existing,request)
+    result = await test_chatflow_non_stream_pressure_wrapper(existing, request)
     return result
