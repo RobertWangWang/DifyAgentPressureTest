@@ -3,6 +3,8 @@ from typing import List
 
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from starlette.responses import JSONResponse
+from fastapi import BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -163,10 +165,20 @@ def delete_record(uuid_str: str, db: Session = Depends(get_db)):
 
 @router.post("/run_test/{uuid_str}", status_code=status.HTTP_200_OK)
 async def run_record(
-    request: Request, uuid_str: str, db: Session = Depends(get_db)
+    request: Request, uuid_str: str, background_tasks: BackgroundTasks,db: Session = Depends(get_db),
 ):
     existing = await run_in_threadpool(TestRecordCRUD.get_by_uuid, db, uuid_str)
     if existing is None:
         raise HTTPException(status_code=404, detail="Record not found")
-    result = await test_chatflow_non_stream_pressure_wrapper(existing, request)
-    return result
+
+    if existing.status == "running":
+        return {"error": "测试任务正在运行中"}
+    elif existing.status == "success":
+        return existing.result
+
+    background_tasks.add_task(test_chatflow_non_stream_pressure_wrapper, existing, request, db)
+
+    return JSONResponse(content={
+        "status": "running",
+        "message": "测试已在后台启动 ✅"
+    })

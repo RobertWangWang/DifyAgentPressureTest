@@ -8,7 +8,8 @@ from sqlalchemy import (
     DateTime,
     func,
     Text,
-    Integer
+    Integer,
+    JSON
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -21,7 +22,7 @@ class TestStatus(str, Enum):
     INIT = "init"
     RUNNING = "running"
     FAILED = "failed"
-
+    SUCCESS = "success"
 
 class TestRecord(Base):
     __tablename__ = "test_chatflow_records"
@@ -51,7 +52,7 @@ class TestRecord(Base):
 
     duration: Mapped[int] = mapped_column(Integer, nullable=True)
 
-    result: Mapped[str] = mapped_column(String(2048), nullable=True)
+    result: Mapped[str] = mapped_column(JSON, nullable=True)
 
     concurrency: Mapped[int] = mapped_column(Integer, nullable=True, default=1)
 
