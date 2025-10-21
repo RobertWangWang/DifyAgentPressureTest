@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import List
 
@@ -20,9 +21,10 @@ from app.core.database import SessionLocal
 from app.services.test_record_services import test_chatflow_non_stream_pressure_wrapper
 
 # ✅ 导入 util 工具函数
-from app.utils.pressure_test import (
+from app.utils.pressure_test_util import (
     dify_api_url_2_agent_apikey_url,
     create_dify_agent_api_key,
+    get_dify_agent_api_key
 )
 
 from loguru import logger
@@ -100,14 +102,26 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
             record_payload.dify_test_agent_id,
         )
 
-        # 创建 API Key
-        created_key = create_dify_agent_api_key(
+        existing_keys = get_dify_agent_api_key(
             api_key_url,
             record_payload.dify_bearer_token,
         )
 
-        # 写入 record payload
-        token_value = created_key.get("token")
+        logger.debug(f"existing keys = {existing_keys}, type = {type(existing_keys)}")
+
+        if len(existing_keys) != 0:
+            logger.debug(f"✅ Dify API Key 已存在，使用已有的 API Key")
+            created_key = existing_keys[0].get("token")
+            token_value = created_key
+        else:
+            # 创建 API Key
+            created_key = create_dify_agent_api_key(
+                api_key_url,
+                record_payload.dify_bearer_token,
+            )
+            # 写入 record payload
+            token_value = created_key.get("token")
+
         if not token_value:
             raise ValueError(f"Dify 返回无效 API Key：{created_key}")
 

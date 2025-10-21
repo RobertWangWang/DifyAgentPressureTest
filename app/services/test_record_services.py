@@ -7,7 +7,7 @@ import asyncio
 import aiohttp
 from sqlalchemy.orm import Session
 
-from app.utils.pressure_test import single_test_chatflow_non_stream_pressure,validate_entry
+from app.utils.pressure_test_util import single_test_chatflow_non_stream_pressure,validate_entry
 from app.utils.logger import logger
 from app.models.test_chatflow_record import TestRecord,TestStatus
 from app.crud.test_chatflow_record_crud import TestRecordCRUD

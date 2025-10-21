@@ -2,7 +2,7 @@ from typing import List
 
 from app.models.provider_model import ProviderModel
 from app.utils.logger import logger
-from app.utils.provider_models import (
+from app.utils.provider_models_util import (
     call_volcengine_ark,
     call_aliyun_dashscope,
     call_openai_compatible,

@@ -5,7 +5,7 @@ import json
 from transformers import AutoTokenizer
 
 from app.utils.logger import logger
-from app.utils.provider_models import send_message_volcengine_ark,send_message_openai_compatible,send_message_aliyun_dashscope
+from app.utils.provider_models_util import send_message_volcengine_ark,send_message_openai_compatible,send_message_aliyun_dashscope
 
 tokenizer = AutoTokenizer.from_pretrained("/home/robertwang/PycharmProjects/DifyAgentPressureTest/app/utils/tokenizer", local_files_only=True)
 
@@ -23,6 +23,7 @@ def single_test_chatflow_non_stream_pressure(
     :param input_dify_api_key:  dify agent 的 apikey
     :param input_query: 输入的测试query （独立参数，对应dify sys.query）
     :param input_dify_username： dify用户名
+    :param llm llm dict(llm_record和llm_message_func)
     :param input_data_dict: 输入的参数字典，可能为空
     :return: 结果字典dict
         token_num : 字符数
@@ -58,7 +59,7 @@ def single_test_chatflow_non_stream_pressure(
             sccore = 100
         else:
             """
-            llm评测
+            llm评测，选择llm模型和message方法
             """
             llm_record = llm['llm_record']
             llm_func = llm['llm_func']
@@ -75,13 +76,17 @@ def single_test_chatflow_non_stream_pressure(
             except Exception as e:
                 logger.error(e)
                 logger.error(f"llm_scorrer: {llm_scorrer}")
+
+        ### 计算token数
         encoded = tokenizer(answer, add_special_tokens=False)
         token_ids = encoded["input_ids"]
+
+        ### 整理结果
         result_dict = {}
-        result_dict["time_consumption"] = end - start
-        result_dict["token_num"] = len(token_ids)
-        result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"]
-        result_dict["score"] = sccore['score']
+        result_dict["time_consumption"] = end - start ### 用时
+        result_dict["token_num"] = len(token_ids) ### 字符数
+        result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"] ### 每秒字符数
+        result_dict["score"] = sccore['score'] ### 得分
 
         return result_dict
     except Exception as e:
@@ -94,7 +99,7 @@ def single_test_chatflow_non_stream_pressure(
         result_dict["score"] = 0
         return result_dict
 
-# 验证函数
+# 验证函数，验证输入参数是否符合dify agent的输入参数要求
 def validate_entry(entry: dict, para_df: pd.DataFrame):
     errors = []
     for _, row in para_df.iterrows():
@@ -161,10 +166,12 @@ def get_dify_agent_api_key(input_agent_api_key_url:str,
                            input_bearer_token:str) -> list:
 
     """
+    获取dify agent的apikey
 
     :param input_agent_api_key_url: 绑定了agent id的api key url
     :param input_bearer_token:  dify的console token
     :return:  当前agent的apikey list
+
     """
 
     headers = {
