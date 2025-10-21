@@ -2,18 +2,22 @@
 @base_url = http://127.0.0.1:8000
 
 ### Create a new record (file upload required)
-POST {{base_url}}/test_chatflow_records/
+POST {{base_url}}/test_records/
 Content-Type: multipart/form-data; boundary=WebKitFormBoundary7MA4YWxkTrZu0gW
 
 --WebKitFormBoundary7MA4YWxkTrZu0gW
-Content-Disposition: form-data; name="file"; filename="test2.csv"
+Content-Disposition: form-data; name="file"; filename="test_100.csv"
 Content-Type: text/csv
 
-< test2.csv
+< test_100.csv
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="concurrency"
 
-64
+8
+--WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="task_name"
+
+task_name
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="dify_api_url"
 
@@ -21,11 +25,11 @@ http://localhost/v1
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="dify_test_agent_id"
 
-b35f8cb8-0f9a-4e03-87bf-9f090a3fb589
+7926b8d9-4101-4df7-a1df-6dccf53748ec
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="dify_bearer_token"
 
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiZmRkZjdiYmQtNWM3NC00Nzc0LTgxMDUtYTE1ZTMxY2I4MTVjIiwiZXhwIjoxNzYxMDEzNDQ0LCJpc3MiOiJTRUxGX0hPU1RFRCIsInN1YiI6IkNvbnNvbGUgQVBJIFBhc3Nwb3J0In0.gige6x35jnXj4EmzXWcp2DxMHHHAv_4B-PvO8oy0naE
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoiZmRkZjdiYmQtNWM3NC00Nzc0LTgxMDUtYTE1ZTMxY2I4MTVjIiwiZXhwIjoxNzYxMDM3MTA0LCJpc3MiOiJTRUxGX0hPU1RFRCIsInN1YiI6IkNvbnNvbGUgQVBJIFBhc3Nwb3J0In0.j2lB8qqrRWfZ2sbcl_FE8Z8qqwo8v1pdLNoYxSGSf3Y
 --WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="dify_username"
 
@@ -52,7 +56,7 @@ Content-Type: application/json
 }
 
 ### 运行测试
-POST {{base_url}}/test_chatflow_records/run_test/{{uuid}}
+POST {{base_url}}/test_records/run_test/{{uuid}}
 
 ### 根据uuid获取测试结果
-GET {{base_url}}/test_chatflow_records/{{uuid}}
+GET {{base_url}}/test_records/{{uuid}}

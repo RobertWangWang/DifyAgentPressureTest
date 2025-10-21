@@ -1,10 +1,10 @@
 from typing import List, Optional, Any, Dict
-from sqlalchemy import select, update, delete, text
+from sqlalchemy import select, update, delete, text, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 from app.models import TestRecord, TestStatus
 from app.core.database import SessionLocal
-
+from app.schemas.test_record_schema import TestRecordRead
 
 class TestRecordCRUD:
 
@@ -17,7 +17,10 @@ class TestRecordCRUD:
         dify_bearer_token: str,
         dify_test_agent_id: str,
         dify_username: str,
+        task_name: str,
         chatflow_query: str,
+        agent_type: str,
+        agent_name: str,
         status: TestStatus = TestStatus.INIT,
         duration: Optional[int] = None,
         result: Optional[str] = None,
@@ -32,6 +35,9 @@ class TestRecordCRUD:
         record = TestRecord(
             filename=filename,
             status=status,
+            agent_type=agent_type,
+            agent_name=agent_name,
+            task_name=task_name,
             duration=duration,
             result=result,
             concurrency=concurrency,
@@ -40,7 +46,7 @@ class TestRecordCRUD:
             dify_test_agent_id=dify_test_agent_id,
             dify_api_key=dify_api_key,
             dify_username=dify_username,
-            chatflow_query=chatflow_query
+            chatflow_query=chatflow_query,
         )
 
         try:
@@ -110,7 +116,7 @@ class TestRecordCRUD:
         with SessionLocal() as session:
             session.execute(
                 text("""
-                    UPDATE test_chatflow_records
+                    UPDATE test_records
                     SET success_count = success_count + 1
                     WHERE uuid = :uuid_str
                 """),
@@ -123,10 +129,60 @@ class TestRecordCRUD:
         with SessionLocal() as session:
             session.execute(
                 text("""
-                    UPDATE test_chatflow_records
+                    UPDATE test_records
                     SET failure_count = failure_count + 1
                     WHERE uuid = :uuid_str
                 """),
                 {"uuid_str": uuid_str}
             )
             session.commit()
+
+    @staticmethod
+    def get_all_records_by_agent_id(input_agent_id: str, page: int, page_size: int):
+        with SessionLocal() as session:
+            # 分页查询数据
+            stmt = (
+                select(TestRecord)
+                .where(TestRecord.dify_test_agent_id == input_agent_id)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+            records = session.scalars(stmt).all()
+
+            # 单独统计总数
+            total_stmt = select(func.count()).select_from(TestRecord).where(
+                TestRecord.dify_test_agent_id == input_agent_id
+            )
+            total = session.scalar(total_stmt)
+
+            return {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "records": [TestRecordRead.model_validate(r) for r in records],
+            }
+
+    @staticmethod
+    def get_all_records_by_task_name(input_task_name: str, page: int, page_size: int):
+        with SessionLocal() as session:
+            # 分页查询数据
+            stmt = (
+                select(TestRecord)
+                .where(TestRecord.task_name == input_task_name)
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+            records = session.scalars(stmt).all()
+
+            # 单独统计总数
+            total_stmt = select(func.count()).select_from(TestRecord).where(
+                TestRecord.task_name == input_task_name
+            )
+            total = session.scalar(total_stmt)
+
+            return {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "records": [TestRecordRead.model_validate(r) for r in records],
+            }

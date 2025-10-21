@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.api.test_chatflow_record_api import router as test_record_router
+from app.api.test_record_api import router as test_record_router
 from app.api.provider_models_api import router as provider_models_router
 from starlette.middleware.sessions import SessionMiddleware
 from app.core.database import init_db

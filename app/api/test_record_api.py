@@ -3,33 +3,39 @@ from pathlib import Path
 from typing import List
 
 from starlette.datastructures import UploadFile as StarletteUploadFile
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status, Query
 from starlette.responses import JSONResponse
 from fastapi import BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.crud.test_chatflow_record_crud import TestRecordCRUD
+from app.crud.test_record_crud import TestRecordCRUD
 from app.schemas.test_record_schema import (
     TestRecordCreate,
     TestRecordRead,
     TestRecordUpdate,
+    PaginatedTestRecordResponse
 )
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.services.test_record_services import test_chatflow_non_stream_pressure_wrapper
+from app.services.test_record_services import (
+    test_chatflow_non_stream_pressure_wrapper,
+    test_workflow_non_stream_pressure_wrapper
+)
 
 # ✅ 导入 util 工具函数
 from app.utils.pressure_test_util import (
     dify_api_url_2_agent_apikey_url,
+    dify_api_url_2_agent_api_app_url,
+    dify_get_agent_type_and_agent_name,
     create_dify_agent_api_key,
     get_dify_agent_api_key
 )
 
 from loguru import logger
 
-router = APIRouter(prefix="/test_chatflow_records", tags=["TestChatflowRecords"])
+router = APIRouter(prefix="/test_records", tags=["TestChatflowRecords"])
 
 def get_db():
     db = SessionLocal()
@@ -135,6 +141,19 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     # 4️⃣ 保存文件到本地
     filename = await _persist_upload(upload)
 
+    try:
+        agent_api_app_url = dify_api_url_2_agent_api_app_url(
+            record_payload.dify_api_url,
+            record_payload.dify_test_agent_id,
+        )
+
+        data_dict = dify_get_agent_type_and_agent_name(agent_api_app_url, record_payload.dify_bearer_token)
+        record_payload.agent_type = data_dict['agent_type']
+        record_payload.agent_name = data_dict['agent_name']
+    except Exception as e:
+        logger.error(f"❌ 获取 Dify Agent 类型失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取 Dify Agent 类型失败: {e}")
+
     # 5️⃣ 写入数据库
     created = TestRecordCRUD.create(
         db,
@@ -177,6 +196,27 @@ def delete_record(uuid_str: str, db: Session = Depends(get_db)):
     return None
 
 
+@router.get(
+    "/get_records_by_agent_id/{agent_id}",
+    response_model=PaginatedTestRecordResponse,
+    status_code=status.HTTP_200_OK
+)
+def get_records_by_agent_id(
+    agent_id: str,
+    page: int = Query(1, ge=1, description="页码，从1开始"),
+    page_size: int = Query(10, ge=1, le=100, description="每页返回的条目数，默认10，最大100"),
+):
+    return TestRecordCRUD.get_all_records_by_agent_id(agent_id, page, page_size)
+
+
+@router.get("/get_record_by_task_name/{input_task_name}",
+            response_model=PaginatedTestRecordResponse,
+            status_code=status.HTTP_200_OK
+            )
+def get_record_by_task_name(input_task_name: str, page: int = Query(1, ge=1, description="页码，从1开始"),
+                            page_size: int = Query(10, ge=1, le=100, description="每页返回的条目数，默认10，最大100")):
+    return TestRecordCRUD.get_all_records_by_task_name(input_task_name, page, page_size)
+
 @router.post("/run_test/{uuid_str}", status_code=status.HTTP_200_OK)
 async def run_record(
     request: Request, uuid_str: str, background_tasks: BackgroundTasks,db: Session = Depends(get_db),
@@ -190,7 +230,10 @@ async def run_record(
     elif existing.status == "success":
         return existing.result
 
-    background_tasks.add_task(test_chatflow_non_stream_pressure_wrapper, existing, request, db)
+    if existing.agent_type == "chatflow":
+        background_tasks.add_task(test_chatflow_non_stream_pressure_wrapper, existing, request, db)
+    elif  existing.agent_type == "workflow":
+        background_tasks.add_task(test_workflow_non_stream_pressure_wrapper, existing, request, db)
 
     return JSONResponse(content={
         "status": "running",

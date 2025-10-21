@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum as PyEnum
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
 
@@ -17,13 +17,16 @@ class TestRecordBase(BaseModel):
     duration: Optional[int] = None
     result: Optional[Dict[str, Any]] = None   # ✅ 改为标准字典类型
     concurrency: int = 1
+    task_name: str = Field(..., max_length=256)
+    agent_type: str = Field(None, max_length=32)
+    agent_name: str = Field(None, max_length=256)
 
     dify_api_url: str = Field(..., max_length=512)
     dify_bearer_token: str = Field(..., max_length=512)
     dify_test_agent_id: str = Field(..., max_length=256)
     dify_api_key: Optional[str] = Field(None, max_length=256)
     dify_username: str = Field(..., max_length=256)
-    chatflow_query: str = Field(...)
+    chatflow_query: str = Field(None, max_length=1024)
 
     class Config:
         from_attributes = True
@@ -53,6 +56,9 @@ class TestRecordRead(TestRecordBase):
     uuid: str
     created_at: datetime
     filename: str
+    task_name: str
+    agent_name: str
+    agent_type: str
     success_count: int = Field(0, description="成功次数")
     failure_count: int = Field(0, description="失败次数")
 
@@ -73,3 +79,9 @@ class TestRecordUpdate(BaseModel):
 
     class Config:
         from_attributes = True
+
+class PaginatedTestRecordResponse(BaseModel):
+    page: int
+    page_size: int
+    total: int
+    records: List[TestRecordRead]

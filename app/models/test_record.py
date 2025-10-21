@@ -24,8 +24,12 @@ class TestStatus(str, Enum):
     FAILED = "failed"
     SUCCESS = "success"
 
+class AgentType(str, Enum):
+    CHATFLOW = "chatflow"
+    WORKFLOW = "workflow"
+
 class TestRecord(Base):
-    __tablename__ = "test_chatflow_records"
+    __tablename__ = "test_records"
 
     # 用 uuid 作为主键（字符串形式）
     uuid: Mapped[str] = mapped_column(
@@ -53,6 +57,17 @@ class TestRecord(Base):
         comment="评测任务当前状态,枚举"
     )
 
+    agent_type: Mapped[AgentType] = mapped_column(
+        SqlEnum(AgentType, name="agent_type_enum"),
+        nullable=False,
+        default="",
+        comment="智能体的类别，默认chatflow"
+    )
+
+    agent_name: Mapped[str] = mapped_column(String(256), nullable=True, comment="智能体名称")
+
+    task_name: Mapped[str] = mapped_column(String(256), nullable=False, comment="评测任务名称", default="")
+
     duration: Mapped[int] = mapped_column(Integer, nullable=True, comment="评测任务耗时")
 
     result: Mapped[str] = mapped_column(JSON, nullable=True, comment="评测结果")
@@ -73,7 +88,7 @@ class TestRecord(Base):
 
     dify_username: Mapped[str] = mapped_column(String(256), nullable=False, comment="评测任务dify用户名")
 
-    chatflow_query: Mapped[str] = mapped_column(Text, nullable=False, comment="chatflow query")
+    chatflow_query: Mapped[str] = mapped_column(Text, nullable=True, comment="chatflow query", default="")
 
     def __repr__(self) -> str:
         return (
