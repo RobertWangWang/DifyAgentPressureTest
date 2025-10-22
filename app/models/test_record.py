@@ -64,6 +64,8 @@ class TestRecord(Base):
         comment="智能体的类别，默认chatflow"
     )
 
+    judge_prompt: Mapped[str] = mapped_column(String(2048), nullable=False, comment="评测任务大模型判断提示词", default="")
+
     agent_name: Mapped[str] = mapped_column(String(256), nullable=True, comment="智能体名称")
 
     task_name: Mapped[str] = mapped_column(String(256), nullable=False, comment="评测任务名称", default="")
@@ -81,6 +83,8 @@ class TestRecord(Base):
     dify_test_agent_id: Mapped[str] = mapped_column(String(256), nullable=False, comment="dify test agent id")
 
     dify_api_key: Mapped[str] = mapped_column(String(256), nullable=True, comment="dify api key,传入bearer token后生成")
+
+    dify_account_id: Mapped[str] = mapped_column(String(64), nullable=True, comment="dify account id")
 
     success_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="成功次数")
 

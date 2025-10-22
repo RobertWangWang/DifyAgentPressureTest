@@ -20,7 +20,9 @@ class TestRecordBase(BaseModel):
     task_name: str = Field(..., max_length=256)
     agent_type: str = Field(None, max_length=32)
     agent_name: str = Field(None, max_length=256)
+    judge_prompt: str = Field(..., max_length=2048)
 
+    dify_account_id: str = Field(None, max_length=64)
     dify_api_url: str = Field(..., max_length=512)
     dify_bearer_token: str = Field(..., max_length=512)
     dify_test_agent_id: str = Field(..., max_length=256)
@@ -85,3 +87,8 @@ class PaginatedTestRecordResponse(BaseModel):
     page_size: int
     total: int
     records: List[TestRecordRead]
+
+class TestRecordsByUUIDAndBearerToken(BaseModel):
+    """根据 UUID 和 Bearer Token 获取测试记录"""
+    agent_id: str
+    bearer_token: str

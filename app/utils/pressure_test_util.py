@@ -269,6 +269,40 @@ def dify_api_url_2_agent_api_app_url(input_dify_url:str,
     logger.info(f"dify api app url converted: {target_url}")
     return target_url
 
+def dify_api_url_2_account_profile_url(input_dify_url:str):
+
+    """
+
+    :param input_dify_url:  输入的 dify api url
+    :return: target_url: dify account profile详细信息的url
+    """
+
+    target_url = input_dify_url.replace("/v1","/console/api/account/profile")
+    logger.info(f"dify account profile url converted: {target_url}")
+    return target_url
+
+def dify_get_account_id(input_account_profile_url:str,
+                        input_bearer_token:str) -> str:
+
+    """
+
+    :param input_account_profile_url:  dify的account profile url
+    :param input_bearer_token: dify的console token
+    :return: dify当前账户的account id
+    """
+
+    headers = {
+        "Authorization": f"Bearer {input_bearer_token}",
+        "Content-Type": "application/json",
+    }
+
+    response = requests.get(input_account_profile_url, headers=headers)
+    logger.info(f"dify account profile response: {response.text}")
+    resp_json = json.loads(response.text)
+    account_id = resp_json['id']
+    logger.info(f"dify account id: {account_id}")
+    return account_id
+
 def dify_get_agent_type_and_agent_name(
         input_agent_manipulate_url:str,
         input_bearer_token:str) -> dict:
@@ -318,8 +352,13 @@ def get_dify_agent_api_key(input_agent_api_key_url:str,
 
     response = requests.get(input_agent_api_key_url, headers=headers)
     resp_json = response.json()
+    logger.info(f"function 'get_dify_agent_api_key' response: {resp_json}")
     logger.info(f"dify api key list: {resp_json['data']}")
-    return resp_json['data']
+    try:
+        target_data = resp_json['data']
+    except Exception as e:
+        return [e.__str__()]
+    return target_data
 
 def create_dify_agent_api_key(input_agent_api_key_url:str,
                             input_bearer_token:str) -> dict:

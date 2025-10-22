@@ -2,9 +2,13 @@ from typing import List, Optional, Any, Dict
 from sqlalchemy import select, update, delete, text, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from pathlib import Path
+import pandas as pd
+
 from app.models import TestRecord, TestStatus
 from app.core.database import SessionLocal
 from app.schemas.test_record_schema import TestRecordRead
+from app.utils.pressure_test_util import dify_get_account_id,dify_api_url_2_account_profile_url
 
 class TestRecordCRUD:
 
@@ -17,7 +21,9 @@ class TestRecordCRUD:
         dify_bearer_token: str,
         dify_test_agent_id: str,
         dify_username: str,
+        dify_account_id: str,
         task_name: str,
+        judge_prompt: str,
         chatflow_query: str,
         agent_type: str,
         agent_name: str,
@@ -41,12 +47,14 @@ class TestRecordCRUD:
             duration=duration,
             result=result,
             concurrency=concurrency,
+            dify_account_id=dify_account_id,
             dify_api_url=dify_api_url,
             dify_bearer_token=dify_bearer_token,
             dify_test_agent_id=dify_test_agent_id,
             dify_api_key=dify_api_key,
             dify_username=dify_username,
             chatflow_query=chatflow_query,
+            judge_prompt=judge_prompt,
         )
 
         try:
@@ -62,6 +70,11 @@ class TestRecordCRUD:
     @staticmethod
     def get_by_uuid(session: Session, uuid_str: str) -> Optional[TestRecord]:
         stmt = select(TestRecord).where(TestRecord.uuid == uuid_str)
+        return session.scalars(stmt).first()
+
+    @staticmethod
+    def get_by_agent_id(session: Session, agent_id: str) -> Optional[TestRecord]:
+        stmt = select(TestRecord).where(TestRecord.dify_test_agent_id == agent_id)
         return session.scalars(stmt).first()
 
     @staticmethod
@@ -186,3 +199,40 @@ class TestRecordCRUD:
                 "total": total,
                 "records": [TestRecordRead.model_validate(r) for r in records],
             }
+
+    @staticmethod
+    def get_dataset_first_three_lines(input_uuid:str):
+
+        with SessionLocal() as session:
+            record = TestRecordCRUD.get_by_uuid(SessionLocal(), input_uuid)
+            dataset_file_name = record.filename
+            dataset_path = Path("uploads/" + dataset_file_name).resolve()
+            if dataset_path.__str__().endswith(".csv"):
+                df = pd.read_csv(dataset_path)
+            elif dataset_path.__str__().endswith(".xlsx"):
+                df = pd.read_excel(dataset_file_name, engine="openpyxl")
+            else:
+                raise ValueError(
+                    "Unsupported file type. Only .csv and .xlsx test files are supported."
+                )
+
+            return df.head(3).to_dict(orient="records")
+
+    @staticmethod
+    def get_records_by_uuid_and_bearer_token(input_agent_id: str, bearer_token: str):
+
+        with SessionLocal() as session:
+
+            record = TestRecordCRUD.get_by_agent_id(session, input_agent_id)
+            input_dify_url = record.dify_api_url
+            input_dify_account_url = dify_api_url_2_account_profile_url(input_dify_url.__str__())
+            dify_account_id = dify_get_account_id(input_dify_account_url, bearer_token)
+
+            stmt = (
+                select(TestRecord)
+                .where(TestRecord.dify_account_id == dify_account_id).where(
+                    TestRecord.dify_test_agent_id == input_agent_id
+                )
+            )
+            records = session.scalars(stmt).all()
+            return [TestRecordRead.model_validate(r) for r in records]

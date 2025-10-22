@@ -1,4 +1,4 @@
-import json
+import pandas as pd
 from pathlib import Path
 from typing import List
 
@@ -15,7 +15,8 @@ from app.schemas.test_record_schema import (
     TestRecordCreate,
     TestRecordRead,
     TestRecordUpdate,
-    PaginatedTestRecordResponse
+    PaginatedTestRecordResponse,
+    TestRecordsByUUIDAndBearerToken
 )
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -30,7 +31,9 @@ from app.utils.pressure_test_util import (
     dify_api_url_2_agent_api_app_url,
     dify_get_agent_type_and_agent_name,
     create_dify_agent_api_key,
-    get_dify_agent_api_key
+    get_dify_agent_api_key,
+    dify_get_account_id,
+    dify_api_url_2_account_profile_url
 )
 
 from loguru import logger
@@ -46,7 +49,9 @@ def get_db():
 
 
 @router.post("/", response_model=TestRecordRead, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_record(request: Request, db: Session = Depends(get_db)):
+    """接收文件 + 表单参数，返回文件前三行内容并继续写入数据库"""
     content_type = request.headers.get("content-type", "").lower()
 
     if not content_type.startswith("multipart/form-data"):
@@ -55,7 +60,8 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
             detail="Request content type must be multipart/form-data with a file upload.",
         )
 
-    async def _persist_upload(upload: UploadFile) -> str:
+    async def _persist_upload(upload: UploadFile) -> Path:
+        """保存上传文件到本地并返回路径"""
         upload_dir = Path(settings.FILE_UPLOAD_DIR)
         upload_dir.mkdir(parents=True, exist_ok=True)
 
@@ -76,92 +82,99 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
         file_bytes = await upload.read()
         candidate_path.write_bytes(file_bytes)
         await upload.close()
-        return candidate_name
+        return candidate_path
 
-    # 1️⃣ 解析 form-data 表单
+    # 1️⃣ 解析 form-data
     form = await request.form()
     upload = form.get("file")
 
     if not isinstance(upload, StarletteUploadFile):
-        raise HTTPException(
-            status_code=400,
-            detail="A 'file' upload is required and must be provided as a file.",
-        )
+        raise HTTPException(status_code=400, detail="A 'file' upload is required and must be provided as a file.")
 
     payload_data: dict[str, str] = {}
     for key, value in form.multi_items():
-        if key == "file":
-            continue
-        payload_data[key] = value
+        if key != "file":
+            payload_data[key] = value
 
-    # 2️⃣ 解析 payload 为 Pydantic 模型
+    # 2️⃣ 保存文件
+    file_path = await _persist_upload(upload)
+
+    # 3️⃣ 读取文件前 3 条内容
+    preview_rows = []
+    try:
+        suffix = file_path.suffix.lower()
+        if suffix == ".csv":
+            df = pd.read_csv(file_path)
+        elif suffix in [".xls", ".xlsx"]:
+            df = pd.read_excel(file_path)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
+
+        preview_rows = df.head(3).to_dict(orient="records")
+        logger.info(f"✅ 文件 {file_path.name} 前 3 行内容: {preview_rows}")
+    except Exception as e:
+        logger.error(f"❌ 文件解析失败: {e}")
+        raise HTTPException(status_code=400, detail=f"无法读取文件内容: {e}")
+
+    # 4️⃣ 解析 payload
     try:
         record_payload = TestRecordCreate(**payload_data)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
-    # 3️⃣ 生成 API Key（调用 util 函数）
+    # 5️⃣ 生成 Dify API Key
     try:
-        # 拼接 agent 的 API key URL
         api_key_url = dify_api_url_2_agent_apikey_url(
-            record_payload.dify_api_url,
-            record_payload.dify_test_agent_id,
+            record_payload.dify_api_url, record_payload.dify_test_agent_id
         )
-
-        existing_keys = get_dify_agent_api_key(
-            api_key_url,
-            record_payload.dify_bearer_token,
-        )
-
-        logger.debug(f"existing keys = {existing_keys}, type = {type(existing_keys)}")
-
-        if len(existing_keys) != 0:
-            logger.debug(f"✅ Dify API Key 已存在，使用已有的 API Key")
-            created_key = existing_keys[0].get("token")
-            token_value = created_key
+        existing_keys = get_dify_agent_api_key(api_key_url, record_payload.dify_bearer_token)
+        if existing_keys:
+            token_value = existing_keys[0].get("token")
+            logger.debug("✅ 使用已有 API Key")
         else:
-            # 创建 API Key
-            created_key = create_dify_agent_api_key(
-                api_key_url,
-                record_payload.dify_bearer_token,
-            )
-            # 写入 record payload
+            created_key = create_dify_agent_api_key(api_key_url, record_payload.dify_bearer_token)
             token_value = created_key.get("token")
-
         if not token_value:
-            raise ValueError(f"Dify 返回无效 API Key：{created_key}")
-
+            raise ValueError("Dify 返回无效 API Key")
         record_payload.dify_api_key = token_value
-        logger.success(f"✅ Dify API Key created for agent: {record_payload.dify_test_agent_id}")
-
     except Exception as e:
         logger.error(f"❌ 生成 Dify API Key 失败: {e}")
         raise HTTPException(status_code=500, detail=f"创建 Dify API Key 失败: {e}")
 
-    # 4️⃣ 保存文件到本地
-    filename = await _persist_upload(upload)
-
+    # 6️⃣ 获取 Agent 信息
     try:
         agent_api_app_url = dify_api_url_2_agent_api_app_url(
-            record_payload.dify_api_url,
-            record_payload.dify_test_agent_id,
+            record_payload.dify_api_url, record_payload.dify_test_agent_id
         )
-
         data_dict = dify_get_agent_type_and_agent_name(agent_api_app_url, record_payload.dify_bearer_token)
-        record_payload.agent_type = data_dict['agent_type']
-        record_payload.agent_name = data_dict['agent_name']
+        record_payload.agent_type = data_dict["agent_type"]
+        record_payload.agent_name = data_dict["agent_name"]
     except Exception as e:
-        logger.error(f"❌ 获取 Dify Agent 类型失败: {e}")
+        logger.error(f"❌ 获取 Agent 类型失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取 Dify Agent 类型失败: {e}")
 
-    # 5️⃣ 写入数据库
-    created = TestRecordCRUD.create(
-        db,
-        filename=filename,
-        **record_payload.dict()
-    )
+    # 7️⃣ 获取 Account ID
+    try:
+        dify_account_profile_url = dify_api_url_2_account_profile_url(record_payload.dify_api_url)
+        record_payload.dify_account_id = dify_get_account_id(
+            dify_account_profile_url, record_payload.dify_bearer_token
+        )
+    except Exception as e:
+        logger.error(f"❌ 获取 Dify Account ID 失败: {e}")
+        raise HTTPException(status_code=500, detail=f"获取 Dify Account ID 失败: {e}")
 
-    return created
+    # 8️⃣ 写入数据库
+    created = TestRecordCRUD.create(db, filename=file_path.name, **record_payload.model_dump())
+
+    # ✅ 返回结果（包含文件前三行）
+    return JSONResponse(
+        content={
+            "message": "✅ 文件上传并创建记录成功",
+            "uploaded_filename": file_path.name,
+            "file_preview": preview_rows,
+            "created_record": created.to_dict(exclude_none=True),
+        }
+    )
 
 @router.get("/{uuid_str}", response_model=TestRecordRead)
 def get_record(uuid_str: str, db: Session = Depends(get_db)):
@@ -239,3 +252,13 @@ async def run_record(
         "status": "running",
         "message": "测试已在后台启动 ✅"
     })
+
+@router.get("/get_dataset_first_three_lines/{uuid_str}", status_code=status.HTTP_200_OK)
+def get_dataset_first_three_lines(uuid_str: str):
+
+    return TestRecordCRUD.get_dataset_first_three_lines(uuid_str)
+
+@router.post("/get_records_by_uuid_and_bearer_token",status_code=status.HTTP_200_OK,response_model=List[TestRecordRead])
+def get_records_by_uuid_and_bearer_token(request: TestRecordsByUUIDAndBearerToken):
+
+    return TestRecordCRUD.get_records_by_uuid_and_bearer_token(request.agent_id,request.bearer_token)
