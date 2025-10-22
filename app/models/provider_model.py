@@ -7,9 +7,7 @@ from sqlalchemy import (
     DateTime,
     JSON,
 )
-from sqlalchemy.orm import declarative_base
-
-Base = declarative_base()
+from app.core.database import Base
 
 
 class ProviderModel(Base):

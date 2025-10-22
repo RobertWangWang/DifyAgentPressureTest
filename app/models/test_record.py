@@ -11,11 +11,10 @@ from sqlalchemy import (
     Integer,
     JSON
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column
 
 
-class Base(DeclarativeBase):
-    pass
+from app.core.database import Base
 
 
 class TestStatus(str, Enum):
@@ -23,6 +22,7 @@ class TestStatus(str, Enum):
     RUNNING = "running"
     FAILED = "failed"
     SUCCESS = "success"
+    EXPERIMENT = "experiment"
 
 class AgentType(str, Enum):
     CHATFLOW = "chatflow"
@@ -65,6 +65,10 @@ class TestRecord(Base):
     )
 
     judge_prompt: Mapped[str] = mapped_column(String(2048), nullable=False, comment="评测任务大模型判断提示词", default="")
+
+    judge_model: Mapped[str] = mapped_column(String(256), nullable=True, comment="评测任务大模型名称", default="")
+
+    judge_model_provider_name: Mapped[str] = mapped_column(String(256), nullable=True, comment="评测任务大模型供应商名称")
 
     agent_name: Mapped[str] = mapped_column(String(256), nullable=True, comment="智能体名称")
 

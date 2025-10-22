@@ -11,19 +11,21 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.crud.test_record_crud import TestRecordCRUD
+from app.models.provider_model import ProviderModel
 from app.schemas.test_record_schema import (
     TestRecordCreate,
     TestRecordRead,
     TestRecordUpdate,
     PaginatedTestRecordResponse,
-    TestRecordsByUUIDAndBearerToken
+    TestRecordsByUUIDAndBearerToken,
 )
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.services.test_record_services import (
     test_chatflow_non_stream_pressure_wrapper,
-    test_workflow_non_stream_pressure_wrapper
+    test_workflow_non_stream_pressure_wrapper,
 )
+from app.services.provider_model_services import llm_connection_test
 
 # ✅ 导入 util 工具函数
 from app.utils.pressure_test_util import (
@@ -48,7 +50,6 @@ def get_db():
         db.close()
 
 
-@router.post("/", response_model=TestRecordRead, status_code=status.HTTP_201_CREATED)
 @router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_record(request: Request, db: Session = Depends(get_db)):
     """接收文件 + 表单参数，返回文件前三行内容并继续写入数据库"""
@@ -163,8 +164,29 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
         logger.error(f"❌ 获取 Dify Account ID 失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取 Dify Account ID 失败: {e}")
 
+    ### 获取llm到seession
+    judge_model = form.get('judge_model')
+    judge_model_provider_name = form.get('judge_model_provider_name')
+    print(judge_model,judge_model_provider_name)
+    llm_models = (
+        db.query(ProviderModel)
+        .filter(
+            ProviderModel.provider_name == judge_model_provider_name,
+            ProviderModel.model_name == judge_model,
+        )
+        .all()
+    )
+    llm = llm_connection_test(candidate_models= llm_models)
+    request.session['llm'] = llm
+    print(llm_models,"******"*50)
+    ###
+
     # 8️⃣ 写入数据库
     created = TestRecordCRUD.create(db, filename=file_path.name, **record_payload.model_dump())
+
+    request.session['dify_agent_pressure_task_uuid'] = created.uuid
+
+
 
     # ✅ 返回结果（包含文件前三行）
     return JSONResponse(
@@ -232,7 +254,10 @@ def get_record_by_task_name(input_task_name: str, page: int = Query(1, ge=1, des
 
 @router.post("/run_test/{uuid_str}", status_code=status.HTTP_200_OK)
 async def run_record(
-    request: Request, uuid_str: str, background_tasks: BackgroundTasks,db: Session = Depends(get_db),
+        request: Request,
+        uuid_str: str,
+        background_tasks: BackgroundTasks,db: Session = Depends(get_db),
+        mode: str = Query(default="all", description="experiment or full mode+"),
 ):
     existing = await run_in_threadpool(TestRecordCRUD.get_by_uuid, db, uuid_str)
     if existing is None:
@@ -244,9 +269,9 @@ async def run_record(
         return existing.result
 
     if existing.agent_type == "chatflow":
-        background_tasks.add_task(test_chatflow_non_stream_pressure_wrapper, existing, request, db)
+        background_tasks.add_task(test_chatflow_non_stream_pressure_wrapper, existing, request, db, mode)
     elif  existing.agent_type == "workflow":
-        background_tasks.add_task(test_workflow_non_stream_pressure_wrapper, existing, request, db)
+        background_tasks.add_task(test_workflow_non_stream_pressure_wrapper, existing, request, db, mode)
 
     return JSONResponse(content={
         "status": "running",

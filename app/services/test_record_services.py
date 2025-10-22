@@ -7,6 +7,7 @@ import asyncio
 import aiohttp
 from sqlalchemy.orm import Session
 
+from app.core.database import SessionLocal
 from app.utils.pressure_test_util import (
     single_test_chatflow_non_stream_pressure,
     single_test_workflow_non_stream_pressure,
@@ -14,6 +15,7 @@ from app.utils.pressure_test_util import (
 from app.utils.logger import logger
 from app.models.test_record import TestRecord,TestStatus
 from app.crud.test_record_crud import TestRecordCRUD
+from app.crud.single_run_result_crud import SingleRunResultCRUD
 
 def align_dify_input_types(df_data: pd.DataFrame, df_schema: pd.DataFrame) -> pd.DataFrame:
     """
@@ -119,10 +121,21 @@ async def run_chatflow_tests_async(
                     input_data_dict=row_dict,
                     llm=llm
                 )
+                single_run_test_data_dict = {
+                    "input_task_uuid": input_uuid,
+                    "input_time_consumption": result["time_consumption"],
+                    "input_score": result["score"],
+                    "input_tps": result["TPS"],
+                    "input_generated_answer": result["generated_answer"],
+                }
                 await asyncio.to_thread(
                     TestRecordCRUD.increment_success_count, input_uuid
                 )
-                logger.success(f"✅ [Row {index + 1}] 测试完成: {result}")
+                await asyncio.to_thread(
+                    SingleRunResultCRUD.create,
+                    **single_run_test_data_dict
+                )
+                logger.success(f"✅ [Row {index + 1}] 测试完成: {single_run_test_data_dict}")
                 return result
             except Exception as e:
                 await asyncio.to_thread(
@@ -178,6 +191,17 @@ async def run_workflow_tests_async(
                 await asyncio.to_thread(
                     TestRecordCRUD.increment_success_count, input_uuid
                 )
+                single_run_test_data_dict = {
+                    "input_task_uuid": input_uuid,
+                    "input_time_consumption": result["time_consumption"],
+                    "input_score": result["score"],
+                    "input_tps": result["TPS"],
+                    "input_generated_answer": result["generated_answer"],
+                }
+                await asyncio.to_thread(
+                    SingleRunResultCRUD.create,
+                    **single_run_test_data_dict
+                )
                 logger.success(f"✅ [Row {index + 1}] 测试完成: {result}")
                 return result
             except Exception as e:
@@ -199,7 +223,10 @@ async def run_workflow_tests_async(
     return all_results
 
 async def test_chatflow_non_stream_pressure_wrapper(
-    testrecord: TestRecord, request: Request, db:Session
+        testrecord: TestRecord,
+        request: Request,
+        db:Session,
+        mode:str
 ):
 
     input_dify_url = testrecord.dify_api_url
@@ -219,6 +246,12 @@ async def test_chatflow_non_stream_pressure_wrapper(
         raise ValueError(
             "Unsupported file type. Only .csv and .xlsx test files are supported."
         )
+
+    ### 运行模式判断
+    if mode == "experiment":
+        df = df.head(3)
+    elif mode == "full":
+        pass
 
     ### 1.获取智能体可输入的参数字典
     para_df = await asyncio.to_thread(
@@ -268,12 +301,19 @@ async def test_chatflow_non_stream_pressure_wrapper(
         "avg_score": avg_score,
     }
 
-    logger.success(f"测试结果: {result_dict}")
-    update_data_dict = {
-        "status": TestStatus.SUCCESS,
-        "duration": total_time_consumption,
-        "result": result_dict,
-    }
+    logger.success(f"测试结果: {result_dict}, 测试模式为: {mode}")
+    if mode == "experiment":
+        update_data_dict = {
+            "status": TestStatus.EXPERIMENT,
+            "duration": total_time_consumption,
+            "result": result_dict,
+        }
+    elif mode == "full":
+        update_data_dict = {
+            "status": TestStatus.SUCCESS,
+            "duration": total_time_consumption,
+            "result": result_dict,
+        }
     TestRecordCRUD.update_by_uuid(
         session=db,
         uuid_str=testrecord.uuid,
@@ -283,12 +323,14 @@ async def test_chatflow_non_stream_pressure_wrapper(
     return result_dict
 
 async def test_workflow_non_stream_pressure_wrapper(
-    testrecord: TestRecord, request: Request, db:Session
+        testrecord: TestRecord,
+        request: Request,
+        db:Session,
+        mode:str
 ):
 
     input_dify_url = testrecord.dify_api_url
     input_dify_api_key = testrecord.dify_api_key
-    input_query = testrecord.chatflow_query
     input_username = testrecord.dify_username
     input_dify_test_file = Path("uploads/" + testrecord.filename).resolve()
     input_concurrency = testrecord.concurrency
@@ -303,6 +345,12 @@ async def test_workflow_non_stream_pressure_wrapper(
         raise ValueError(
             "Unsupported file type. Only .csv and .xlsx test files are supported."
         )
+
+    ### 运行模式判断
+    if mode == "experiment":
+        df = df.head(3)
+    elif mode == "full":
+        pass
 
     ### 1.获取智能体可输入的参数字典
     para_df = await asyncio.to_thread(
@@ -351,12 +399,19 @@ async def test_workflow_non_stream_pressure_wrapper(
         "avg_score": avg_score,
     }
 
-    logger.success(f"测试结果: {result_dict}")
-    update_data_dict = {
-        "status": TestStatus.SUCCESS,
-        "duration": total_time_consumption,
-        "result": result_dict,
-    }
+    logger.success(f"测试结果: {result_dict}, 测试模式为: {mode}")
+    if mode == "experiment":
+        update_data_dict = {
+            "status": TestStatus.EXPERIMENT,
+            "duration": total_time_consumption,
+            "result": result_dict,
+        }
+    elif mode == "full":
+        update_data_dict = {
+            "status": TestStatus.SUCCESS,
+            "duration": total_time_consumption,
+            "result": result_dict,
+        }
     TestRecordCRUD.update_by_uuid(
         session=db,
         uuid_str=testrecord.uuid,

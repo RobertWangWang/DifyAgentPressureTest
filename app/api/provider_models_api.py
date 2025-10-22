@@ -103,6 +103,12 @@ def query_provider_models(
 
     llm = llm_connection_test(candidate_models= models)
     request.session['llm'] = llm
+
+    ### 关联llm到test_record表
+    from app.crud.test_record_crud import TestRecordCRUD
+    TestRecordCRUD.update_judge_model(request.session.get('dify_agent_pressure_task_uuid'),llm['llm_record'].get('model_name'))
+    ###
+
     # 不抛 404，返回空列表更友好
     return models
 

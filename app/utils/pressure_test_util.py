@@ -92,6 +92,7 @@ def single_test_chatflow_non_stream_pressure(
         result_dict["token_num"] = len(token_ids) ### 字符数
         result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"] ### 每秒字符数
         result_dict["score"] = sccore['score'] ### 得分
+        result_dict["generated_answer"] =  answer
 
         return result_dict
     except Exception as e:
@@ -102,6 +103,7 @@ def single_test_chatflow_non_stream_pressure(
         result_dict["token_num"] = 0
         result_dict["TPS"] = 0
         result_dict["score"] = 0
+        result_dict["generated_answer"] = ""
         return result_dict
 
 def single_test_workflow_non_stream_pressure(
@@ -183,9 +185,8 @@ def single_test_workflow_non_stream_pressure(
         return result_dict
     except Exception as e:
         json_text = json.loads(response.text)
-        answer = str(json_text["data"]["outputs"])
         logger.error(e)
-        logger.error(f"response: {answer}")
+        logger.error(f"response: {json_text}")
         result_dict = {}
         result_dict["time_consumption"] = end - start
         result_dict["token_num"] = 0

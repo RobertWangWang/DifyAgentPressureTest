@@ -32,6 +32,8 @@ class TestRecordCRUD:
         result: Optional[str] = None,
         concurrency: int = 1,
         dify_api_key: Optional[str] = None,
+        judge_model: str = None,
+        judge_model_provider_name: str = None,
     ) -> TestRecord:
         """
         创建一条新的测试记录。
@@ -55,6 +57,8 @@ class TestRecordCRUD:
             dify_username=dify_username,
             chatflow_query=chatflow_query,
             judge_prompt=judge_prompt,
+            judge_model=judge_model,
+            judge_model_provider_name=judge_model_provider_name,
         )
 
         try:
@@ -236,3 +240,10 @@ class TestRecordCRUD:
             )
             records = session.scalars(stmt).all()
             return [TestRecordRead.model_validate(r) for r in records]
+
+    @staticmethod
+    def update_judge_model(input_uuid: str, judge_model_name: str):
+        with SessionLocal() as session:
+            record = TestRecordCRUD.get_by_uuid(session, input_uuid)
+            record.judge_model_name = judge_model_name
+            TestRecordCRUD.update_by_uuid(session, input_uuid,**{"judge_model": judge_model_name})

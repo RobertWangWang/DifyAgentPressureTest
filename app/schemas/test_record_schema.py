@@ -9,6 +9,7 @@ class TestStatus(str, PyEnum):
     RUNNING = "running"
     FAILED = "failed"
     SUCCESS = "success"
+    EXPERIMENT = "experiment"
 
 
 class TestRecordBase(BaseModel):
@@ -21,6 +22,8 @@ class TestRecordBase(BaseModel):
     agent_type: str = Field(None, max_length=32)
     agent_name: str = Field(None, max_length=256)
     judge_prompt: str = Field(..., max_length=2048)
+    judge_model: str = Field(..., max_length=256)
+    judge_model_provider_name: str = Field(..., max_length=256)
 
     dify_account_id: str = Field(None, max_length=64)
     dify_api_url: str = Field(..., max_length=512)
@@ -92,3 +95,15 @@ class TestRecordsByUUIDAndBearerToken(BaseModel):
     """根据 UUID 和 Bearer Token 获取测试记录"""
     agent_id: str
     bearer_token: str
+
+class ExperimentRequest(BaseModel):
+    """实验任务请求参数"""
+    task_uuid: str
+
+class ExperimentResult(BaseModel):
+    """实验结果"""
+
+    time_consumption: float
+    token_num: int
+    TPS: float
+    score: float
