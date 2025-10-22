@@ -5,12 +5,14 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.crud.provider_model_crud import get_all_models_by_levels
 from app.models.provider_model import ProviderModel
 from app.schemas.provider_model_schema import (
     ProviderModelCreate,
     ProviderModelRead,
     ProviderModelUpdate,
-    ProviderQueryRequest
+    ProviderQueryRequest,
+    ProviderModelTreeResponse
 )
 from app.services.provider_model_services import llm_connection_test
 
@@ -138,3 +140,12 @@ def delete_provider_model(model_id: int, db: Session = Depends(get_db)):
     db.delete(model)
     db.commit()
     return None
+
+@router.get("/tree", response_model=ProviderModelTreeResponse)
+def get_provider_model_tree(db: Session = Depends(get_db)):
+    """
+    获取按 provider_name 分组的模型树状结构
+    仅返回 model_type='text-generation' 且 is_valid=True 的模型
+    """
+    result = get_all_models_by_levels(db)
+    return {"data": result}

@@ -7,9 +7,10 @@ from datetime import datetime
 from typing import List, Optional
 from sqlalchemy import select, update, delete
 from sqlalchemy.orm import Session
+from collections import defaultdict
 
 from app.models.provider_model import ProviderModel  # 假设上面的定义保存在 models.py
-
+from app.core.database import SessionLocal
 
 # === CREATE ===
 def create_provider_model(
@@ -132,3 +133,26 @@ def delete_provider_model(db: Session, model_id: int):
     """删除指定模型"""
     db.execute(delete(ProviderModel).where(ProviderModel.id == model_id))
     db.commit()
+
+def get_all_models_by_levels(db: Session):
+
+    """
+
+    :param db:
+    :return: 树状模型列表
+    """
+
+    stmt = select(ProviderModel.provider_name, ProviderModel.model_name).where(ProviderModel.is_valid == True).where(
+        ProviderModel.is_valid == True,
+        ProviderModel.model_type == "text-generation")
+    rows = db.execute(stmt).all()
+
+    # 按 provider 分组
+    grouped = defaultdict(list)
+    for provider_name, model_name in rows:
+        grouped[provider_name].append(model_name)
+
+    # 将 defaultdict 转换为普通 dict 并排序
+    sorted_provider_map = {provider: sorted(models) for provider, models in sorted(grouped.items())}
+
+    return sorted_provider_map
