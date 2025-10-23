@@ -31,7 +31,6 @@ class TestRecordBase(BaseModel):
     dify_test_agent_id: str = Field(..., max_length=256)
     dify_api_key: Optional[str] = Field(None, max_length=256)
     dify_username: str = Field(..., max_length=256)
-    chatflow_query: str = Field(None, max_length=1024)
 
     # ✅ 新增字段：数据集绝对路径
     dataset_absolute_path: Optional[str] = Field(
@@ -110,7 +109,6 @@ class TestRecordUpdate(BaseModel):
     dify_test_agent_id: Optional[str] = Field(None, max_length=256)
     dify_api_key: Optional[str] = Field(None, max_length=256)
     dify_username: Optional[str] = Field(None, max_length=256)
-    chatflow_query: Optional[str] = None
     filename: Optional[str] = Field(None, max_length=255)
 
     dataset_absolute_path: Optional[str] = Field(
@@ -156,3 +154,9 @@ class TestRecordStatus(BaseModel):
 
     uuid: str
     status: TestStatus
+
+class AgentParameterRequest(BaseModel):
+    """代理参数请求参数"""
+    agent_id: str
+    dify_api_url: str
+    bearer_token: str

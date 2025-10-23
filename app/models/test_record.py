@@ -117,8 +117,6 @@ class TestRecord(Base):
         comment="数据集在服务器上的绝对路径"
     )
 
-    chatflow_query: Mapped[str] = mapped_column(Text, nullable=True, comment="chatflow query", default="")
-
     def __repr__(self) -> str:
         return (
             f"<TestRecord(uuid='{self.uuid}', status='{self.status}', "

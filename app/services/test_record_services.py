@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app.utils.pressure_test_util import (
     single_test_chatflow_non_stream_pressure,
     single_test_workflow_non_stream_pressure,
-    validate_entry)
+    validate_entry,
+    get_agent_input_para_dict)
 from app.utils.logger import logger
 from app.models.test_record import TestRecord,TestStatus
 from app.crud.test_record_crud import TestRecordCRUD
@@ -56,42 +57,15 @@ def align_dify_input_types(df_data: pd.DataFrame, df_schema: pd.DataFrame) -> pd
 
     return df_result
 
-def get_agent_input_para_dict(input_dify_url:str,input_dify_api_key:str)->pd.DataFrame:
-    url = input_dify_url + "/parameters"
-    headers = {
-        "Authorization": f"Bearer {input_dify_api_key}",
-        "Content-Type": "application/json",
-    }
-    response = requests.get(url, headers=headers)
-    resp_json = response.json()
 
-    records = []
-
-    for item in resp_json["user_input_form"]:
-        key = list(item.keys())[0]
-        entry = item[key]
-        record = {
-            "type": entry.get("type"),
-            "variable": entry.get("variable"),
-            "label": entry.get("label"),
-            "max_length": entry.get("max_length"),
-            "required": entry.get("required"),
-            "options": entry.get("options")
-        }
-        records.append(record)
-
-    # 转为 DataFrame
-    para_df = pd.DataFrame(records)
-
-    return para_df
 
 async def run_chatflow_tests_async(
     df,
     input_uuid:str,
     input_dify_url: str,
     input_dify_api_key: str,
-    input_query: str,
     input_dify_username: str,
+    input_judge_prompt: str,
     llm,
     concurrency: int = 10,
 
@@ -106,6 +80,7 @@ async def run_chatflow_tests_async(
 
     async def _run_single(index, row, session):
         row_dict = row.to_dict()
+        input_query = row_dict['query']
         async with semaphore:
             try:
                 logger.debug(f"开始执行第 {index + 1} 行测试")
@@ -118,6 +93,7 @@ async def run_chatflow_tests_async(
                     input_query=input_query,
                     input_dify_username=input_dify_username,
                     input_data_dict=row_dict,
+                    input_judge_prompt=input_judge_prompt,
                     llm=llm
                 )
                 single_run_test_data_dict = {
@@ -162,6 +138,7 @@ async def run_workflow_tests_async(
     input_dify_url: str,
     input_dify_api_key: str,
     input_dify_username: str,
+    input_judge_prompt: str,
     llm,
     concurrency: int = 10,
 
@@ -187,6 +164,7 @@ async def run_workflow_tests_async(
                     input_dify_api_key=input_dify_api_key,
                     input_dify_username=input_dify_username,
                     input_data_dict=row_dict,
+                    input_judge_prompt = input_judge_prompt,
                     llm=llm
                 )
                 await asyncio.to_thread(
@@ -234,10 +212,10 @@ async def test_chatflow_non_stream_pressure_wrapper(
 
     input_dify_url = testrecord.dify_api_url
     input_dify_api_key = testrecord.dify_api_key
-    input_query = testrecord.chatflow_query
     input_username = testrecord.dify_username
     input_dify_test_file = Path("uploads/" + testrecord.filename).resolve()
     input_concurrency = testrecord.concurrency
+    input_judge_prompt = testrecord.judge_prompt
 
     if input_dify_test_file.__str__().endswith(".csv"):
         df = await asyncio.to_thread(pd.read_csv, input_dify_test_file)
@@ -283,9 +261,9 @@ async def test_chatflow_non_stream_pressure_wrapper(
         input_uuid = testrecord.uuid,
         input_dify_url=input_dify_url,
         input_dify_api_key=input_dify_api_key,
-        input_query=input_query,
         input_dify_username=input_username,
         concurrency=input_concurrency,
+        input_judge_prompt=input_judge_prompt,
         llm=llm,
     )
 
@@ -337,6 +315,7 @@ async def test_workflow_non_stream_pressure_wrapper(
     input_username = testrecord.dify_username
     input_dify_test_file = Path("uploads/" + testrecord.filename).resolve()
     input_concurrency = testrecord.concurrency
+    input_judge_prompt = testrecord.judge_prompt
 
     if input_dify_test_file.__str__().endswith(".csv"):
         df = await asyncio.to_thread(pd.read_csv, input_dify_test_file)
@@ -384,6 +363,7 @@ async def test_workflow_non_stream_pressure_wrapper(
         input_dify_api_key=input_dify_api_key,
         input_dify_username=input_username,
         concurrency=input_concurrency,
+        input_judge_prompt = input_judge_prompt,
         llm=llm,
     )
 

@@ -6,6 +6,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status, Query, Body
 from starlette.responses import JSONResponse
 from fastapi import BackgroundTasks
+from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -18,7 +19,8 @@ from app.schemas.test_record_schema import (
     TestRecordUpdate,
     PaginatedTestRecordResponse,
     TestRecordsByUUIDAndBearerToken,
-    TestRecordStatus
+    TestRecordStatus,
+    AgentParameterRequest
 )
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -36,7 +38,10 @@ from app.utils.pressure_test_util import (
     create_dify_agent_api_key,
     get_dify_agent_api_key,
     dify_get_account_id,
-    dify_api_url_2_account_profile_url
+    dify_api_url_2_account_profile_url,
+    get_workflow_parameter_template,
+    get_chatflow_parameter_template,
+    AgentType
 )
 
 from loguru import logger
@@ -325,3 +330,46 @@ def search_by_keyword(
 
     return TestRecordCRUD.get_records_by_keyword(key_word, page, page_size)
 
+@router.post("/get_parameter_template_by_agent_id",status_code=status.HTTP_200_OK)
+def get_parameter_template_by_agent_id(payload: AgentParameterRequest):
+
+
+    agent_id = payload.agent_id
+    dify_api_url = payload.dify_api_url
+    bearer_token = payload.bearer_token
+
+    dify_app_url = dify_api_url_2_agent_api_app_url(dify_api_url, agent_id)
+    agent_related_info = dify_get_agent_type_and_agent_name(input_agent_manipulate_url=dify_app_url,
+                                                            input_bearer_token=bearer_token)
+    agent_type = agent_related_info.get("agent_type")
+    api_key = ""
+
+    # 5️⃣ 生成 Dify API Key
+    try:
+        api_key_url = dify_api_url_2_agent_apikey_url(
+            dify_api_url, agent_id
+        )
+        existing_keys = get_dify_agent_api_key(api_key_url, bearer_token)
+        if existing_keys:
+            api_key = existing_keys[0].get("token")
+            logger.debug("✅ 使用已有 API Key")
+        else:
+            created_key = create_dify_agent_api_key(api_key_url, bearer_token)
+            api_key = created_key.get("token")
+        if not api_key:
+            raise ValueError("Dify 返回无效 API Key")
+    except Exception as e:
+        logger.error(f"❌ 生成 Dify API Key 失败: {e}")
+        raise HTTPException(status_code=500, detail=f"创建 Dify API Key 失败: {e}")
+
+    excel_buffer = None
+    if agent_type == AgentType.WORKFLOW:
+        excel_buffer = get_workflow_parameter_template(dify_api_url, api_key)
+    elif agent_type == AgentType.CHATFLOW:
+        excel_buffer = get_chatflow_parameter_template(dify_api_url, api_key)
+
+    return StreamingResponse(
+        excel_buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="parameter_template.xlsx"'}
+    )

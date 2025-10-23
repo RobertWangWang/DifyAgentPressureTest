@@ -188,7 +188,7 @@ def export_single_run_results_to_excel(task_id: str):
         output.seek(0)
 
         # 5️⃣ 生成响应
-        filename = f"single_run_results_{task_id}.xlsx"
+        filename = "results.xlsx"
         headers = {
             "Content-Disposition": f'attachment; filename="{filename}"'
         }

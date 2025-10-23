@@ -4,6 +4,7 @@ import time
 import json
 from transformers import AutoTokenizer
 from pathlib import Path
+from io import StringIO, BytesIO
 
 from app.utils.logger import logger
 from app.utils.provider_models_util import (
@@ -25,6 +26,7 @@ def single_test_chatflow_non_stream_pressure(
         input_query:str,
         input_dify_username: str,
         llm,
+        input_judge_prompt:str,
         input_data_dict:dict = None,
         )-> dict:
 
@@ -79,7 +81,7 @@ def single_test_chatflow_non_stream_pressure(
                 llm_func = send_message_volcengine_ark
             elif llm_func == send_message_openai_compatible.__name__:
                 llm_func = send_message_openai_compatible
-            llm_response = llm_func(llm_record.get('config'),answer, ref_answer)
+            llm_response = llm_func(llm_record.get('config'),answer, ref_answer, input_judge_prompt)
             llm_scorrer = llm_response['json']["choices"][0]["message"]["content"]
             try:
                 sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
@@ -116,6 +118,7 @@ def single_test_workflow_non_stream_pressure(
         input_dify_api_key:str,
         input_dify_username: str,
         llm,
+        input_judge_prompt:str,
         input_data_dict:dict = None,
         )-> dict:
 
@@ -168,7 +171,7 @@ def single_test_workflow_non_stream_pressure(
                 llm_func = send_message_volcengine_ark
             elif llm_func == send_message_openai_compatible.__name__:
                 llm_func = send_message_openai_compatible
-            llm_response = llm_func(llm_record.get('config'),answer, ref_answer)
+            llm_response = llm_func(llm_record.get('config'),answer, ref_answer, input_judge_prompt)
             llm_scorrer = llm_response['json']["choices"][0]["message"]["content"]
             try:
                 sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
@@ -202,6 +205,8 @@ def single_test_workflow_non_stream_pressure(
 # 验证函数，验证输入参数是否符合dify agent的输入参数要求
 def validate_entry(entry: dict, para_df: pd.DataFrame):
     errors = []
+    if "query" in entry.keys():
+        del entry["query"]
     for _, row in para_df.iterrows():
         var = row["variable"]
         typ = row["type"]
@@ -326,6 +331,7 @@ def dify_get_agent_type_and_agent_name(
 
     response = requests.get(input_agent_manipulate_url, headers=headers)
     resp_json = response.json()
+    logger.info(f"dify agent response: {resp_json}")
     logger.info(f"dify agent response type: {resp_json['mode']}")
     logger.info(f"dify agent response name: {resp_json['name']}")
     result_dict = {}
@@ -407,3 +413,62 @@ def delete_dify_agent_api_key(input_agent_api_key_url:str,
     else:
         logger.warning(f"dify api key delete failed: {input_apikey}")
         return {"msg": "failed"}
+
+def get_agent_input_para_dict(input_dify_url:str,input_dify_api_key:str)->pd.DataFrame:
+    url = input_dify_url + "/parameters"
+    logger.debug(f"get_agent_input_para_dict url: {url}, {input_dify_api_key}")
+    headers = {
+        "Authorization": f"Bearer {input_dify_api_key}",
+        "Content-Type": "application/json",
+    }
+    response = requests.get(url, headers=headers)
+    resp_json = response.json()
+    logger.debug(f"dify agent input parameter response: {resp_json}")
+    records = []
+
+    for item in resp_json["user_input_form"]:
+        key = list(item.keys())[0]
+        entry = item[key]
+        record = {
+            "type": entry.get("type"),
+            "variable": entry.get("variable"),
+            "label": entry.get("label"),
+            "max_length": entry.get("max_length"),
+            "required": entry.get("required"),
+            "options": entry.get("options")
+        }
+        records.append(record)
+
+    # 转为 DataFrame
+    para_df = pd.DataFrame(records)
+
+    return para_df
+
+def get_workflow_parameter_template(api_url:str,api_key:str):
+
+    result = get_agent_input_para_dict(api_url, api_key)
+    variables = result["variable"].tolist()
+    data_sheet_df = pd.DataFrame(columns=variables)
+    excel_buffer = BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        result.to_excel(writer, index=False, sheet_name="description")
+        data_sheet_df.to_excel(writer, index=False, sheet_name="data")
+    # 将指针重置到文件开头
+    excel_buffer.seek(0)
+
+    return excel_buffer
+
+def get_chatflow_parameter_template(api_url:str,api_key:str):
+
+    result = get_agent_input_para_dict(api_url,api_key)
+    variables = result["variable"].tolist()
+    variables.append("query")
+    data_sheet_df = pd.DataFrame(columns=variables)
+    excel_buffer = BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        result.to_excel(writer, index=False, sheet_name="description")
+        data_sheet_df.to_excel(writer, index=False, sheet_name="data")
+    # 将指针重置到文件开头
+    excel_buffer.seek(0)
+
+    return excel_buffer
