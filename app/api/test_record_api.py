@@ -3,8 +3,7 @@ from pathlib import Path
 from typing import List
 
 from starlette.datastructures import UploadFile as StarletteUploadFile
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status, Query, Body
 from starlette.responses import JSONResponse
 from fastapi import BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
@@ -19,6 +18,7 @@ from app.schemas.test_record_schema import (
     TestRecordUpdate,
     PaginatedTestRecordResponse,
     TestRecordsByUUIDAndBearerToken,
+    TestRecordStatus
 )
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -53,7 +53,7 @@ def get_db():
 
 @router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_record(request: Request, db: Session = Depends(get_db)):
-    """接收文件 + 表单参数，返回文件前三行内容并继续写入数据库"""
+    """接收文件 + 表单参数，返回文件前三行内容并写入数据库（包含 dataset_absolute_path）"""
     content_type = request.headers.get("content-type", "").lower()
 
     if not content_type.startswith("multipart/form-data"):
@@ -165,9 +165,9 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
         logger.error(f"❌ 获取 Dify Account ID 失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取 Dify Account ID 失败: {e}")
 
-    ### 获取llm到seession
-    judge_model = form.get('judge_model')
-    judge_model_provider_name = form.get('judge_model_provider_name')
+    # 8️⃣ 获取 LLM 到 session
+    judge_model = form.get("judge_model")
+    judge_model_provider_name = form.get("judge_model_provider_name")
     llm_models = (
         db.query(ProviderModel)
         .filter(
@@ -176,26 +176,35 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
         )
         .all()
     )
-    llm = llm_connection_test(candidate_models= llm_models)
-    request.session['llm'] = llm
-    ###
+    llm = llm_connection_test(candidate_models=llm_models)
+    request.session["llm"] = llm
 
-    # 8️⃣ 写入数据库
-    created = TestRecordCRUD.create(db, filename=file_path.name, **record_payload.model_dump())
+    # ✅ 9️⃣ 写入数据库（新增 dataset_absolute_path）
+    payload_dict = record_payload.model_dump()
+    payload_dict.pop("dataset_absolute_path", None)  # 防止重复
+    logger.info(f"✅ 写入数据库: {payload_dict}")
 
-    request.session['dify_agent_pressure_task_uuid'] = created.uuid
+    # ✅ 9️⃣ 写入数据库（新增 dataset_absolute_path）
+    created = TestRecordCRUD.create(
+        db,
+        filename=file_path.name,
+        dataset_absolute_path=str(file_path.resolve()),  # ✅ 新增字段：绝对路径
+        **payload_dict
+    )
 
+    request.session["dify_agent_pressure_task_uuid"] = created.uuid
 
-
-    # ✅ 返回结果（包含文件前三行）
+    # ✅ 返回结果（包含文件前三行 + 绝对路径）
     return JSONResponse(
         content={
             "message": "✅ 文件上传并创建记录成功",
             "uploaded_filename": file_path.name,
+            "file_absolute_path": str(file_path.resolve()),  # ✅ 返回给前端
             "file_preview": preview_rows,
             "created_record": created.to_dict(exclude_none=True),
         }
     )
+
 
 @router.get("/{uuid_str}", response_model=TestRecordRead)
 def get_record(uuid_str: str, db: Session = Depends(get_db)):
@@ -219,15 +228,23 @@ def update_record(uuid_str: str, payload: TestRecordUpdate, db: Session = Depend
     return updated
 
 
-@router.delete("/{uuid_str}", status_code=status.HTTP_204_NO_CONTENT)
+
+@router.delete("/{uuid_str}", response_model=TestRecordRead, status_code=status.HTTP_200_OK)
 def delete_record(uuid_str: str, db: Session = Depends(get_db)):
     existing = TestRecordCRUD.get_by_uuid(db, uuid_str)
     if existing is None:
         raise HTTPException(status_code=404, detail="Record not found")
+
     success = TestRecordCRUD.delete_by_uuid(db, uuid_str)
     if not success:
         raise HTTPException(status_code=500, detail="Delete failed")
-    return None
+
+    # ✅ 再查询一次（即使被标记为删除）
+    deleted_record = TestRecordCRUD.get_by_uuid_include_deleted(db, uuid_str)
+    if not deleted_record:
+        raise HTTPException(status_code=404, detail="Deleted record not found")
+
+    return TestRecordRead.model_validate(deleted_record)
 
 
 @router.get(
@@ -241,15 +258,6 @@ def get_records_by_agent_id(
     page_size: int = Query(10, ge=1, le=100, description="每页返回的条目数，默认10，最大100"),
 ):
     return TestRecordCRUD.get_all_records_by_agent_id(agent_id, page, page_size)
-
-
-@router.get("/get_record_by_task_name/{input_task_name}",
-            response_model=PaginatedTestRecordResponse,
-            status_code=status.HTTP_200_OK
-            )
-def get_record_by_task_name(input_task_name: str, page: int = Query(1, ge=1, description="页码，从1开始"),
-                            page_size: int = Query(10, ge=1, le=100, description="每页返回的条目数，默认10，最大100")):
-    return TestRecordCRUD.get_all_records_by_task_name(input_task_name, page, page_size)
 
 @router.post("/run_test/{uuid_str}", status_code=status.HTTP_200_OK)
 async def run_record(
@@ -286,3 +294,34 @@ def get_dataset_first_three_lines(uuid_str: str):
 def get_records_by_uuid_and_bearer_token(request: TestRecordsByUUIDAndBearerToken):
 
     return TestRecordCRUD.get_records_by_uuid_and_bearer_token(request.agent_id,request.bearer_token)
+
+@router.post("/get_uuid_task_status/{uuid}",status_code=status.HTTP_200_OK,response_model=TestRecordStatus)
+def get_uuid_task_status(uuid: str):
+
+    return TestRecordCRUD.get_uuid_task_status(uuid)
+
+
+
+@router.post(
+    "/search_by_keyword",
+    response_model=PaginatedTestRecordResponse,
+    status_code=status.HTTP_200_OK,
+)
+def search_by_keyword(
+    payload: dict = Body(..., example={"key_word": "", "page": 1, "page_size": 10})
+):
+    """
+    按关键字搜索测评记录：
+    - key_word 为空：返回全部记录；
+    - key_word 不为空：在 task_name 或 agent_name 中模糊匹配。
+    """
+
+    key_word = payload.get("key_word", "")
+    page = payload.get("page", 1)
+    page_size = payload.get("page_size", 10)
+
+    if not isinstance(page, int) or not isinstance(page_size, int):
+        raise HTTPException(status_code=400, detail="page 和 page_size 必须为整数")
+
+    return TestRecordCRUD.get_records_by_keyword(key_word, page, page_size)
+

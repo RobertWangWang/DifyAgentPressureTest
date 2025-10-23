@@ -7,7 +7,6 @@ import asyncio
 import aiohttp
 from sqlalchemy.orm import Session
 
-from app.core.database import SessionLocal
 from app.utils.pressure_test_util import (
     single_test_chatflow_non_stream_pressure,
     single_test_workflow_non_stream_pressure,
@@ -122,6 +121,8 @@ async def run_chatflow_tests_async(
                     llm=llm
                 )
                 single_run_test_data_dict = {
+                    "chatflow_query":input_query,
+                    "test_params": row_dict,
                     "input_task_uuid": input_uuid,
                     "input_time_consumption": result["time_consumption"],
                     "input_score": result["score"],
@@ -192,6 +193,8 @@ async def run_workflow_tests_async(
                     TestRecordCRUD.increment_success_count, input_uuid
                 )
                 single_run_test_data_dict = {
+                    "chatflow_query": "",
+                    "test_params": row_dict,
                     "input_task_uuid": input_uuid,
                     "input_time_consumption": result["time_consumption"],
                     "input_score": result["score"],

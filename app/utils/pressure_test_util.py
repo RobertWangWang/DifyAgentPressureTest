@@ -3,6 +3,7 @@ import pandas as pd
 import time
 import json
 from transformers import AutoTokenizer
+from pathlib import Path
 
 from app.utils.logger import logger
 from app.utils.provider_models_util import (
@@ -13,6 +14,10 @@ from app.utils.provider_models_util import (
 from app.models.test_record import AgentType
 
 tokenizer = AutoTokenizer.from_pretrained("/home/robertwang/PycharmProjects/DifyAgentPressureTest/app/utils/tokenizer", local_files_only=True)
+
+# 上传文件目录（根据你的结构）
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+UPLOAD_DIR = BASE_DIR / "uploads"
 
 def single_test_chatflow_non_stream_pressure(
         input_dify_url:str,

@@ -9,10 +9,10 @@ from sqlalchemy import (
     func,
     Text,
     Integer,
-    JSON
+    JSON,
+    Boolean,  # ✅ 新增
 )
 from sqlalchemy.orm import Mapped, mapped_column
-
 
 from app.core.database import Base
 
@@ -24,14 +24,21 @@ class TestStatus(str, Enum):
     SUCCESS = "success"
     EXPERIMENT = "experiment"
 
+
 class AgentType(str, Enum):
     CHATFLOW = "chatflow"
     WORKFLOW = "workflow"
 
+
 class TestRecord(Base):
     __tablename__ = "test_records"
+    __table_args__ = {
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_unicode_ci",
+        "comment": "测试记录表，支持中文模糊搜索"
+    }
 
-    # 用 uuid 作为主键（字符串形式）
+    # 主键
     uuid: Mapped[str] = mapped_column(
         String(36),
         primary_key=True,
@@ -46,6 +53,14 @@ class TestRecord(Base):
         server_default=func.now(),
         nullable=False,
         comment="创建时间"
+    )
+
+    # ✅ 新增字段：软删除标记
+    is_deleted: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        comment="是否被软删除（True 表示已删除）"
     )
 
     filename: Mapped[str] = mapped_column(String(255), nullable=False, comment="评测用到的文件名")
@@ -95,6 +110,12 @@ class TestRecord(Base):
     failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, comment="失败次数")
 
     dify_username: Mapped[str] = mapped_column(String(256), nullable=False, comment="评测任务dify用户名")
+
+    dataset_absolute_path: Mapped[str] = mapped_column(
+        String(1024),
+        nullable=True,
+        comment="数据集在服务器上的绝对路径"
+    )
 
     chatflow_query: Mapped[str] = mapped_column(Text, nullable=True, comment="chatflow query", default="")
 

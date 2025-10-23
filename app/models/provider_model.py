@@ -16,7 +16,11 @@ class ProviderModel(Base):
     来源：provider_models.tsv
     """
     __tablename__ = "provider_models"
-
+    __table_args__ = {
+        "mysql_charset": "utf8mb4",
+        "mysql_collate": "utf8mb4_unicode_ci",
+        "comment": "模型厂商提供，支持中文模糊搜索"
+    }
     # === 基本信息 ===
     id = Column(Integer, primary_key=True, autoincrement=True, comment="主键ID")
     provider_name = Column(String(128), nullable=False, comment="服务商名称，如 aliyun_bailian / open_ai / volcengine")
