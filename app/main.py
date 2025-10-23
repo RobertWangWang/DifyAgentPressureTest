@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from app.api.test_record_api import router as test_record_router
 from app.api.provider_models_api import router as provider_models_router
 from app.api.single_run_result_api import router as single_run_result_router
+from app.api.download_api import router as download_router
 from starlette.middleware.sessions import SessionMiddleware
 from app.core.database import init_db
 app = FastAPI(title="Test Record Management")
@@ -9,7 +10,7 @@ app.add_middleware(SessionMiddleware, secret_key="super-secret-key")
 app.include_router(test_record_router)
 app.include_router(provider_models_router)
 app.include_router(single_run_result_router)
-
+app.include_router(download_router)
 init_db()
 # 打印所有路由
 def print_routes():

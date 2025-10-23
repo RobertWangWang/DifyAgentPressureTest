@@ -4,6 +4,7 @@ from typing import List
 
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status, Query
+from fastapi.responses import FileResponse
 from starlette.responses import JSONResponse
 from fastapi import BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
@@ -167,7 +168,6 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     ### 获取llm到seession
     judge_model = form.get('judge_model')
     judge_model_provider_name = form.get('judge_model_provider_name')
-    print(judge_model,judge_model_provider_name)
     llm_models = (
         db.query(ProviderModel)
         .filter(
@@ -178,7 +178,6 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     )
     llm = llm_connection_test(candidate_models= llm_models)
     request.session['llm'] = llm
-    print(llm_models,"******"*50)
     ###
 
     # 8️⃣ 写入数据库
