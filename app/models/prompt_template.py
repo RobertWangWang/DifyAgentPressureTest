@@ -25,6 +25,9 @@ class PromptTemplate(Base):
     # 模板内容
     content = Column(Text, nullable=False)
 
+    # 模板名称
+    prompt_name = Column(String(255), nullable=False)
+
     def __repr__(self):
         return f"<PromptTemplate(record_id={self.record_id}, uuid={self.uuid}, deleted_at={self.deleted_at})>"
 

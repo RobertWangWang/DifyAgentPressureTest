@@ -10,10 +10,10 @@ from app.models.prompt_template import PromptTemplate
 class PromptTemplateCRUD:
 
     @staticmethod
-    def create(content: str) -> PromptTemplate:
+    def create(content: str, prompt_name:str) -> PromptTemplate:
         """创建新的 PromptTemplate 记录"""
         with SessionLocal() as session:
-            obj = PromptTemplate(content=content)
+            obj = PromptTemplate(content=content, prompt_name=prompt_name)
             session.add(obj)
             session.commit()
             session.refresh(obj)

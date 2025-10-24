@@ -1,7 +1,6 @@
 import pandas as pd
 from pathlib import Path
 from typing import List
-
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status, Query, Body
 from starlette.responses import JSONResponse
@@ -10,6 +9,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
+import asyncio
+import hashlib
 
 from app.crud.test_record_crud import TestRecordCRUD
 from app.models.provider_model import ProviderModel
@@ -42,7 +43,8 @@ from app.utils.pressure_test_util import (
     dify_api_url_2_account_profile_url,
     get_workflow_parameter_template,
     get_chatflow_parameter_template,
-    AgentType
+    AgentType,
+    upload_to_tos
 )
 
 from loguru import logger
@@ -56,31 +58,30 @@ def get_db():
     finally:
         db.close()
 
+def compute_md5_bytes(data: bytes) -> str:
+    """计算文件内容的 MD5"""
+    md5 = hashlib.md5()
+    md5.update(data)
+    return md5.hexdigest()
 
 @router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def create_record(request: Request, db: Session = Depends(get_db)):
-    """接收文件 + 表单参数，返回文件前三行内容并写入数据库（包含 dataset_absolute_path）"""
+    """接收文件 + 表单参数，返回文件前三行内容并写入数据库（并上传至火山 TOS）"""
     content_type = request.headers.get("content-type", "").lower()
 
     if not content_type.startswith("multipart/form-data"):
-        raise HTTPException(
-            status_code=415,
-            detail="Request content type must be multipart/form-data with a file upload.",
-        )
+        raise HTTPException(status_code=415, detail="Request content type must be multipart/form-data with a file upload.")
 
-    async def _persist_upload(upload: UploadFile) -> Path:
+    async def _persist_upload(upload: StarletteUploadFile) -> Path:
         """保存上传文件到本地并返回路径"""
         upload_dir = Path(settings.FILE_UPLOAD_DIR)
         upload_dir.mkdir(parents=True, exist_ok=True)
-
         original_filename = Path(upload.filename or "").name
         if not original_filename:
             raise HTTPException(status_code=400, detail="Uploaded file must have a name.")
 
-        stem = Path(original_filename).stem
-        suffix = Path(original_filename).suffix
-        candidate_name = original_filename
-        candidate_path = upload_dir / candidate_name
+        stem, suffix = Path(original_filename).stem, Path(original_filename).suffix
+        candidate_name, candidate_path = original_filename, upload_dir / original_filename
         counter = 1
         while candidate_path.exists():
             candidate_name = f"{stem}_{counter}{suffix}"
@@ -99,16 +100,12 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     if not isinstance(upload, StarletteUploadFile):
         raise HTTPException(status_code=400, detail="A 'file' upload is required and must be provided as a file.")
 
-    payload_data: dict[str, str] = {}
-    for key, value in form.multi_items():
-        if key != "file":
-            payload_data[key] = value
+    payload_data: dict[str, str] = {k: v for k, v in form.multi_items() if k != "file"}
 
     # 2️⃣ 保存文件
     file_path = await _persist_upload(upload)
 
-    # 3️⃣ 读取文件前 3 条内容
-    preview_rows = []
+    # 3️⃣ 读取文件前 3 行
     try:
         suffix = file_path.suffix.lower()
         if suffix == ".csv":
@@ -117,14 +114,13 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
             df = pd.read_excel(file_path)
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
-
         preview_rows = df.head(3).to_dict(orient="records")
         logger.info(f"✅ 文件 {file_path.name} 前 3 行内容: {preview_rows}")
     except Exception as e:
         logger.error(f"❌ 文件解析失败: {e}")
         raise HTTPException(status_code=400, detail=f"无法读取文件内容: {e}")
 
-    # 4️⃣ 解析 payload
+    # 4️⃣ 校验 payload
     try:
         record_payload = TestRecordCreate(**payload_data)
     except ValidationError as exc:
@@ -132,16 +128,9 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
 
     # 5️⃣ 生成 Dify API Key
     try:
-        api_key_url = dify_api_url_2_agent_apikey_url(
-            record_payload.dify_api_url, record_payload.dify_test_agent_id
-        )
+        api_key_url = dify_api_url_2_agent_apikey_url(record_payload.dify_api_url, record_payload.dify_test_agent_id)
         existing_keys = get_dify_agent_api_key(api_key_url, record_payload.dify_bearer_token)
-        if existing_keys:
-            token_value = existing_keys[0].get("token")
-            logger.debug("✅ 使用已有 API Key")
-        else:
-            created_key = create_dify_agent_api_key(api_key_url, record_payload.dify_bearer_token)
-            token_value = created_key.get("token")
+        token_value = existing_keys[0].get("token") if existing_keys else create_dify_agent_api_key(api_key_url, record_payload.dify_bearer_token).get("token")
         if not token_value:
             raise ValueError("Dify 返回无效 API Key")
         record_payload.dify_api_key = token_value
@@ -151,12 +140,9 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
 
     # 6️⃣ 获取 Agent 信息
     try:
-        agent_api_app_url = dify_api_url_2_agent_api_app_url(
-            record_payload.dify_api_url, record_payload.dify_test_agent_id
-        )
+        agent_api_app_url = dify_api_url_2_agent_api_app_url(record_payload.dify_api_url, record_payload.dify_test_agent_id)
         data_dict = dify_get_agent_type_and_agent_name(agent_api_app_url, record_payload.dify_bearer_token)
-        record_payload.agent_type = data_dict["agent_type"]
-        record_payload.agent_name = data_dict["agent_name"]
+        record_payload.agent_type, record_payload.agent_name = data_dict["agent_type"], data_dict["agent_name"]
     except Exception as e:
         logger.error(f"❌ 获取 Agent 类型失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取 Dify Agent 类型失败: {e}")
@@ -164,9 +150,7 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     # 7️⃣ 获取 Account ID
     try:
         dify_account_profile_url = dify_api_url_2_account_profile_url(record_payload.dify_api_url)
-        record_payload.dify_account_id = dify_get_account_id(
-            dify_account_profile_url, record_payload.dify_bearer_token
-        )
+        record_payload.dify_account_id = dify_get_account_id(dify_account_profile_url, record_payload.dify_bearer_token)
     except Exception as e:
         logger.error(f"❌ 获取 Dify Account ID 失败: {e}")
         raise HTTPException(status_code=500, detail=f"获取 Dify Account ID 失败: {e}")
@@ -174,38 +158,34 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     # 8️⃣ 获取 LLM 到 session
     judge_model = form.get("judge_model")
     judge_model_provider_name = form.get("judge_model_provider_name")
-    llm_models = (
-        db.query(ProviderModel)
-        .filter(
-            ProviderModel.provider_name == judge_model_provider_name,
-            ProviderModel.model_name == judge_model,
-        )
-        .all()
-    )
+    llm_models = db.query(ProviderModel).filter(
+        ProviderModel.provider_name == judge_model_provider_name,
+        ProviderModel.model_name == judge_model,
+    ).all()
     llm = llm_connection_test(candidate_models=llm_models)
     request.session["llm"] = llm
 
-    # ✅ 9️⃣ 写入数据库（新增 dataset_absolute_path）
+    # 9️⃣ 写入数据库
     payload_dict = record_payload.model_dump()
-    payload_dict.pop("dataset_absolute_path", None)  # 防止重复
-    logger.info(f"✅ 写入数据库: {payload_dict}")
-
-    # ✅ 9️⃣ 写入数据库（新增 dataset_absolute_path）
-    created = TestRecordCRUD.create(
-        db,
-        filename=file_path.name,
-        dataset_absolute_path=str(file_path.resolve()),  # ✅ 新增字段：绝对路径
-        **payload_dict
-    )
-
+    payload_dict.pop("dataset_absolute_path", None)
+    created = TestRecordCRUD.create(db, filename=file_path.name, dataset_absolute_path=str(file_path.resolve()), **payload_dict)
     request.session["dify_agent_pressure_task_uuid"] = created.uuid
 
-    # ✅ 返回结果（包含文件前三行 + 绝对路径）
+    # 🔟 异步上传到火山 TOS
+    tos_url = None
+    try:
+        tos_object_key = f"datasets/{file_path.name}"
+        tos_url = await asyncio.to_thread(upload_to_tos, file_path, tos_object_key)
+    except Exception as e:
+        logger.error(f"❌ 上传至火山 TOS 失败: {e}")
+
+    # ✅ 返回结果
     return JSONResponse(
         content={
             "message": "✅ 文件上传并创建记录成功",
             "uploaded_filename": file_path.name,
-            "file_absolute_path": str(file_path.resolve()),  # ✅ 返回给前端
+            "file_absolute_path": str(file_path.resolve()),
+            "file_tos_url": tos_url,  # ✅ 新增字段
             "file_preview": preview_rows,
             "created_record": created.to_dict(exclude_none=True),
         }
@@ -280,6 +260,8 @@ async def run_record(
         return {"error": "测试任务正在运行中"}
     elif existing.status == "success":
         return existing.result
+    elif existing.status == "cancelled":
+        return {"error": "测试任务已取消"}
 
     if existing.agent_type == "chatflow":
         background_tasks.add_task(test_chatflow_non_stream_pressure_wrapper, existing, request, db, mode)

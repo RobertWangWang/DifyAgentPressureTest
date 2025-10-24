@@ -4,6 +4,7 @@ from typing import Optional
 
 class PromptTemplateBase(BaseModel):
     """公共字段（用于复用）"""
+    prompt_name: str = Field(..., description="Prompt 模板名称")
     content: str = Field(..., description="Prompt 模板内容")
     deleted_at: bool = Field(default=False, description="软删除标识")
 

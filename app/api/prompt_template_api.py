@@ -8,7 +8,7 @@ router = APIRouter(prefix="/prompts", tags=["PromptTemplate"])
 @router.post("/", response_model=PromptTemplateRead)
 def create_prompt(data: PromptTemplateCreate):
     """创建 Prompt 模板"""
-    obj = PromptTemplateCRUD.create(content=data.content)
+    obj = PromptTemplateCRUD.create(content=data.content,prompt_name=data.prompt_name)
     return obj
 
 

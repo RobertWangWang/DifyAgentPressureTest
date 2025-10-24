@@ -5,6 +5,7 @@ import json
 from transformers import AutoTokenizer
 from pathlib import Path
 from io import StringIO, BytesIO
+import tos
 
 from app.utils.logger import logger
 from app.utils.provider_models_util import (
@@ -14,7 +15,7 @@ from app.utils.provider_models_util import (
 )
 from app.models.test_record import AgentType
 
-tokenizer = AutoTokenizer.from_pretrained("/home/robertwang/PycharmProjects/DifyAgentPressureTest/app/utils/tokenizer", local_files_only=True)
+tokenizer = AutoTokenizer.from_pretrained("app/utils/tokenizer/", local_files_only=True)
 
 # 上传文件目录（根据你的结构）
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -472,3 +473,30 @@ def get_chatflow_parameter_template(api_url:str,api_key:str):
     excel_buffer.seek(0)
 
     return excel_buffer
+
+def upload_to_tos(local_path: Path, object_key: str) -> str:
+    """同步上传文件到火山引擎 TOS，返回文件公网 URL"""
+    ak = "AKLTNmIxZmJmN2E0ZTY0NDA3NTg0M2Y0MTdiOTllNWMxYTk"
+    sk = "TkRWaVkyRmlZbUZpWVRVMk5EbGpNbUV5T0dNNFpqQmlaVFEwTVRnNFpXUQ=="
+    endpoint = "tos-cn-beijing.volces.com"
+    region = "cn-beijing"
+    bucket_name = "dify-agent-pressure-test"
+
+    client = tos.TosClientV2(ak, sk, endpoint, region)
+    if not local_path.exists():
+        raise FileNotFoundError(f"本地文件不存在: {local_path}")
+
+    try:
+        result = client.put_object_from_file(bucket_name, object_key, str(local_path))
+        url = f"https://{bucket_name}.{endpoint}/{object_key}"
+        logger.info(f"✅ 上传成功: {url}")
+        return url
+    except tos.exceptions.TosClientError as e:
+        logger.error(f"TOS 客户端错误: {e.message}, 原因: {e.cause}")
+        raise
+    except tos.exceptions.TosServerError as e:
+        logger.error(f"TOS 服务端错误: code={e.code}, 请求ID={e.request_id}, 消息={e.message}")
+        raise
+    except Exception as e:
+        logger.exception(f"TOS 未知错误: {e}")
+        raise
