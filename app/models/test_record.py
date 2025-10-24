@@ -20,6 +20,7 @@ from app.core.database import Base
 class TestStatus(str, Enum):
     INIT = "init"
     RUNNING = "running"
+    CANCELLED = "cancelled"   # ✅ 用户主动取消
     FAILED = "failed"
     SUCCESS = "success"
     EXPERIMENT = "experiment"

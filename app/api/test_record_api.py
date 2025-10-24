@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.crud.test_record_crud import TestRecordCRUD
 from app.models.provider_model import ProviderModel
+from app.models.test_record import TestStatus
 from app.schemas.test_record_schema import (
     TestRecordCreate,
     TestRecordRead,
@@ -373,3 +374,12 @@ def get_parameter_template_by_agent_id(payload: AgentParameterRequest):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="parameter_template.xlsx"'}
     )
+
+@router.post("/cancel_test/{uuid_str}")
+async def cancel_test(uuid_str: str, db: Session = Depends(get_db)):
+    record = TestRecordCRUD.get_by_uuid(db, uuid_str)
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+    logger.warning(f"取消请求已提交，任务uuid为：{uuid_str}")
+    TestRecordCRUD.update_by_uuid(db, uuid_str, status=TestStatus.CANCELLED)
+    return {"message": "取消请求已提交，任务将在下一次检测时终止 ✅"}
