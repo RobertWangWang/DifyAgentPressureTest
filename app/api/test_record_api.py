@@ -422,3 +422,23 @@ async def cancel_test(uuid_str: str, db: Session = Depends(get_db)):
     logger.warning(f"取消请求已提交，任务uuid为：{uuid_str}")
     TestRecordCRUD.update_by_uuid(db, uuid_str, status=TestStatus.CANCELLED)
     return {"message": "取消请求已提交，任务将在下一次检测时终止 ✅"}
+
+@router.post("/get_datasets_by_agent_and_bearer_paginated", status_code=status.HTTP_200_OK)
+def get_datasets_by_agent_and_bearer_paginated(
+    payload: dict = Body(..., example={
+        "agent_id": "b35f8cb8-0f9a-4e03-87bf-9f090a3fb589",
+        "bearer_token": "xxxxx",
+        "page": 1,
+        "page_size": 10
+    })
+):
+    agent_id = payload.get("agent_id")
+    bearer_token = payload.get("bearer_token")
+    page = payload.get("page", 1)
+    page_size = payload.get("page_size", 10)
+
+    if not agent_id or not bearer_token:
+        raise HTTPException(status_code=400, detail="必须提供 agent_id 和 bearer_token")
+
+    return TestRecordCRUD.get_datasets_by_agent_and_bearer_token(agent_id, bearer_token, page, page_size)
+

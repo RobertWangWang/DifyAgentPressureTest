@@ -477,3 +477,95 @@ class TestRecordCRUD:
     def update_judge_model(input_uuid: str, judge_model_name: str):
         with SessionLocal() as session:
             TestRecordCRUD.update_by_uuid(session, input_uuid, judge_model=judge_model_name)
+
+    @staticmethod
+    def get_datasets_by_agent_and_bearer_token(agent_id: str, bearer_token: str, page: int = 1, page_size: int = 10):
+        """
+        ✅ 根据 agent_id + bearer_token 查询该账户下的所有测试记录及其对应数据集（分页）
+        """
+        with SessionLocal() as session:
+            try:
+                # 1️⃣ 查找一条记录以获取 dify_api_url
+                record = session.scalar(
+                    select(TestRecord).where(
+                        TestRecord.dify_test_agent_id == agent_id,
+                        TestRecord.is_deleted.is_(False),
+                    )
+                )
+                if not record:
+                    logger.warning(f"❌ 未找到对应 agent_id 的记录: {agent_id}")
+                    return {
+                        "page": page,
+                        "page_size": page_size,
+                        "total": 0,
+                        "records": [],
+                    }
+
+                # 2️⃣ 将 bearer_token 转换为 account_id
+                try:
+                    profile_url = dify_api_url_2_account_profile_url(record.dify_api_url)
+                    dify_account_id = dify_get_account_id(profile_url, bearer_token)
+                    logger.info(f"✅ 获取 dify_account_id 成功: {dify_account_id}")
+                except Exception as e:
+                    logger.error(f"❌ 获取 dify_account_id 失败: {e}")
+                    return {
+                        "page": page,
+                        "page_size": page_size,
+                        "total": 0,
+                        "records": [],
+                    }
+
+                # 3️⃣ 计算总数
+                total_stmt = (
+                    select(func.count())
+                    .select_from(TestRecord)
+                    .where(
+                        TestRecord.dify_account_id == dify_account_id,
+                        TestRecord.dify_test_agent_id == agent_id,
+                        TestRecord.is_deleted.is_(False),
+                    )
+                )
+                total = session.scalar(total_stmt)
+
+                # 4️⃣ 分页查询记录
+                stmt = (
+                    select(TestRecord)
+                    .options(joinedload(TestRecord.dataset))
+                    .where(
+                        TestRecord.dify_account_id == dify_account_id,
+                        TestRecord.dify_test_agent_id == agent_id,
+                        TestRecord.is_deleted.is_(False),
+                    )
+                    .order_by(TestRecord.created_at.desc())
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
+                )
+                records = session.scalars(stmt).all()
+
+                # 5️⃣ 组装返回结果
+                result_items = []
+                for rec in records:
+                    try:
+                        dataset_obj = (
+                            DatasetRead.model_validate(rec.dataset)
+                            if rec.dataset else None
+                        )
+                        record_obj = TestRecordRead.model_validate(rec)
+                        result_items.append({
+                            "record": record_obj,
+                            "dataset": dataset_obj
+                        })
+                    except Exception as e:
+                        logger.warning(f"⚠️ 转换记录失败: uuid={rec.uuid}, 错误={e}")
+
+                logger.info(f"✅ 分页查询成功: page={page}, page_size={page_size}, total={total}")
+                return {
+                    "page": page,
+                    "page_size": page_size,
+                    "total": total,
+                    "records": result_items,
+                }
+
+            except Exception as e:
+                logger.error(f"❌ 查询失败: {e}")
+                raise

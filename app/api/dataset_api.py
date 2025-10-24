@@ -1,11 +1,15 @@
 import os
+import mimetypes
 import asyncio
+from io import BytesIO
+
 import pandas as pd
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, Request, status, Query
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.responses import StreamingResponse
 
 from app.core.database import SessionLocal
 from app.models.dataset import Dataset
@@ -156,3 +160,62 @@ def delete_dataset(uuid: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="删除失败")
     return {"message": f"✅ 数据集 {uuid} 已标记为删除"}
 
+@router.get("/download/{dataset_uuid}")
+def download_dataset(dataset_uuid: str, db: Session = Depends(get_db)):
+    """
+    ✅ 根据数据集 UUID 下载文件
+    1. 查询数据库 → 获取 file_md5, tos_key
+    2. 从 TOS 下载文件到内存
+    3. FastAPI 以流形式返回下载
+    """
+    # 1️⃣ 查找数据集
+    dataset = db.query(Dataset).filter(
+        Dataset.uuid == dataset_uuid,
+        Dataset.is_deleted.is_(False)
+    ).first()
+
+    if not dataset:
+        raise HTTPException(status_code=404, detail="未找到对应的数据集")
+
+    file_md5 = dataset.file_md5
+    object_key = dataset.tos_key
+    file_suffix = dataset.file_suffix or ".csv"
+    filename = dataset.filename or f"{file_md5}{file_suffix}"
+
+    logger.info(f"📦 正在下载数据集: uuid={dataset_uuid}, md5={file_md5}, key={object_key}")
+
+    # 2️⃣ 下载文件到内存
+    try:
+        import tos
+        import os
+
+        ak = os.getenv("TOS_ACCESS_KEY") or "AKLTNmIxZmJmN2E0ZTY0NDA3NTg0M2Y0MTdiOTllNWMxYTk"
+        sk = os.getenv("TOS_SECRET_KEY") or "TkRWaVkyRmlZbUZpWVRVMk5EbGpNbUV5T0dNNFpqQmlaVFEwTVRnNFpXUQ=="
+        endpoint = "tos-cn-beijing.volces.com"
+        region = "cn-beijing"
+        bucket_name = "dify-agent-pressure-test"
+
+        client = tos.TosClientV2(ak, sk, endpoint, region)
+        obj_stream = client.get_object(bucket_name, object_key)
+        buffer = BytesIO()
+
+        for chunk in obj_stream:
+            buffer.write(chunk)
+        buffer.seek(0)
+
+        logger.success(f"✅ 成功下载至内存: {filename}")
+
+    except Exception as e:
+        logger.error(f"❌ 从 TOS 下载失败: {e}")
+        raise HTTPException(status_code=500, detail=f"TOS 下载失败: {e}")
+
+    # 3️⃣ 返回 StreamingResponse，让浏览器下载
+    media_type, _ = mimetypes.guess_type(filename)
+    media_type = media_type or "application/octet-stream"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": media_type,
+    }
+
+    return StreamingResponse(buffer, headers=headers, media_type=media_type)
