@@ -1,7 +1,9 @@
 from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional, Dict, Any, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
+
+from app.schemas.dataset_schema import DatasetRead  # ✅ 新增导入
 
 
 class TestStatus(str, PyEnum):
@@ -14,32 +16,41 @@ class TestStatus(str, PyEnum):
 
 class TestRecordBase(BaseModel):
     """共享字段定义（用于创建、读取、更新继承）"""
+
     status: TestStatus = TestStatus.INIT
     duration: Optional[int] = None
     result: Optional[Dict[str, Any]] = None
     concurrency: int = 1
+
     task_name: str = Field(..., max_length=256)
-    agent_type: str = Field(None, max_length=32)
-    agent_name: str = Field(None, max_length=256)
+    agent_type: str = Field(..., max_length=32)
+    agent_name: Optional[str] = Field(None, max_length=256)
+
     judge_prompt: str = Field(..., max_length=2048)
     judge_model: str = Field(..., max_length=256)
     judge_model_provider_name: str = Field(..., max_length=256)
 
-    dify_account_id: str = Field(None, max_length=64)
+    dify_account_id: Optional[str] = Field(None, max_length=64)
     dify_api_url: str = Field(..., max_length=512)
     dify_bearer_token: str = Field(..., max_length=512)
     dify_test_agent_id: str = Field(..., max_length=256)
     dify_api_key: Optional[str] = Field(None, max_length=256)
     dify_username: str = Field(..., max_length=256)
 
-    # ✅ 新增字段：数据集绝对路径
+    # ✅ 新增字段：外键 dataset_uuid
+    dataset_uuid: Optional[str] = Field(
+        None,
+        description="关联数据集 UUID（外键）"
+    )
+
+    # ✅ 数据集绝对路径（兼容旧逻辑）
     dataset_absolute_path: Optional[str] = Field(
         None,
         max_length=1024,
-        description="数据集在服务器上的绝对路径"
+        description="数据集在服务器上的绝对路径（历史字段）"
     )
 
-    # ✅ 新增字段：软删除标记
+    # ✅ 软删除标记
     is_deleted: bool = Field(
         False,
         description="软删除标记，True 表示已删除"
@@ -64,37 +75,58 @@ class TestRecordBase(BaseModel):
                 "dify_test_agent_id": "agent_123",
                 "dify_api_key": "api_key_xxx",
                 "dify_username": "robert",
-                "chatflow_query": "How are you?",
+                "dataset_uuid": "8b43b5c7-6c90-48ac-a6a0-0e1e16c5cb9e",
                 "dataset_absolute_path": "/home/ubuntu/uploads/data.csv",
                 "is_deleted": False
             }
         }
 
 
-class TestRecordCreate(TestRecordBase):
-    """创建时需要的字段"""
-    pass
+class TestRecordCreate(BaseModel):
+    """创建评测任务时的输入模型"""
+
+    task_name: str
+    judge_prompt: str
+    judge_model: str
+    judge_model_provider_name: str
+
+    dify_api_url: str
+    dify_test_agent_id: str
+    dify_bearer_token: str
+    dify_username: str
+    dify_api_key: Optional[str] = None   # ✅ 新增字段
+
+    concurrency: int = 1
+    dataset_uuid: Optional[str] = None
+    dataset_file_md5: Optional[str] = None
+
+    # ✅ 这两个字段由后端补全
+    agent_type: Optional[str] = None
+    agent_name: Optional[str] = None
+
+    class Config:
+        from_attributes = True
 
 
-class TestRecordRead(TestRecordBase):
-    """响应读取模型"""
+class TestRecordRead(BaseModel):
     uuid: str
-    created_at: datetime
-    filename: str
     task_name: str
     agent_name: str
     agent_type: str
-    success_count: int = Field(0, description="成功次数")
-    failure_count: int = Field(0, description="失败次数")
+    status: str
+    created_at: datetime
+    dify_username: str
+    concurrency: int
+    is_deleted: bool
+    judge_model: Optional[str] = None
+    judge_model_provider_name: Optional[str] = None
+    dataset_file_md5: Optional[str] = None
+    dataset_tos_url: Optional[str] = None
 
-    dataset_absolute_path: Optional[str] = Field(
-        None, description="数据集在服务器上的绝对路径"
-    )
+    # ✅ 嵌套对象
+    dataset: Optional[DatasetRead] = None
 
-    # ✅ 在返回时包含 is_deleted
-    is_deleted: bool = Field(
-        False, description="软删除标记，True 表示已删除"
-    )
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TestRecordUpdate(BaseModel):
@@ -103,19 +135,16 @@ class TestRecordUpdate(BaseModel):
     duration: Optional[int] = None
     result: Optional[Dict[str, Any]] = None
     concurrency: Optional[int] = None
-
     dify_api_url: Optional[str] = Field(None, max_length=512)
     dify_bearer_token: Optional[str] = Field(None, max_length=512)
     dify_test_agent_id: Optional[str] = Field(None, max_length=256)
     dify_api_key: Optional[str] = Field(None, max_length=256)
     dify_username: Optional[str] = Field(None, max_length=256)
     filename: Optional[str] = Field(None, max_length=255)
-
+    dataset_uuid: Optional[str] = Field(None, description="关联数据集 UUID")
     dataset_absolute_path: Optional[str] = Field(
-        None, max_length=1024, description="数据集在服务器上的绝对路径"
+        None, max_length=1024, description="数据集绝对路径（历史字段）"
     )
-
-    # ✅ 更新时也可以设置软删除状态
     is_deleted: Optional[bool] = Field(
         None, description="软删除标记，可用于逻辑删除/恢复"
     )
@@ -125,6 +154,7 @@ class TestRecordUpdate(BaseModel):
 
 
 class PaginatedTestRecordResponse(BaseModel):
+    """分页返回结构"""
     page: int
     page_size: int
     total: int
@@ -149,11 +179,21 @@ class ExperimentResult(BaseModel):
     TPS: float
     score: float
 
+
+
 class TestRecordStatus(BaseModel):
-    """测试记录的当前状态"""
+    """测试记录的当前状态（带数据集信息）"""
 
     uuid: str
     status: TestStatus
+    task_name: Optional[str] = None
+    agent_name: Optional[str] = None
+    is_deleted: bool = False
+    dataset: Optional[DatasetRead] = None  # ✅ 新增字段
+
+    class Config:
+        from_attributes = True
+
 
 class AgentParameterRequest(BaseModel):
     """代理参数请求参数"""

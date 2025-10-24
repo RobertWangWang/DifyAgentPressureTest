@@ -1,3 +1,6 @@
+import hashlib
+from typing import Union
+import re
 import requests
 import pandas as pd
 import time
@@ -20,6 +23,17 @@ tokenizer = AutoTokenizer.from_pretrained("app/utils/tokenizer/", local_files_on
 # 上传文件目录（根据你的结构）
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
+
+def extract_score_from_string(input_string: str):
+
+    """
+
+    :param input_string: 从杂乱无章的回答中提取分数
+    :return: 分数字典
+    """
+
+    numbers = re.findall(r"\d+", input_string)
+    return {"score": max(numbers)}
 
 def single_test_chatflow_non_stream_pressure(
         input_dify_url:str,
@@ -68,8 +82,9 @@ def single_test_chatflow_non_stream_pressure(
         json_text = json.loads(response.text)
         answer = json_text["answer"]
         ref_answer = input_data_dict.get("ref_answer","")
+        sccore = {"score":10}
         if len(ref_answer) == 0:
-            sccore = 100
+            sccore = {"score":100}
         else:
             """
             llm评测，选择llm模型和message方法
@@ -83,14 +98,18 @@ def single_test_chatflow_non_stream_pressure(
             elif llm_func == send_message_openai_compatible.__name__:
                 llm_func = send_message_openai_compatible
             llm_response = llm_func(llm_record.get('config'),answer, ref_answer, input_judge_prompt)
+            logger.debug(f"llm评分阶段的llm_response: {llm_response}")
             llm_scorrer = llm_response['json']["choices"][0]["message"]["content"]
             try:
                 sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
             except Exception as e:
+                logger.error("llm_scorrer json error")
                 logger.error(e)
                 logger.error(f"llm_scorrer: {llm_scorrer}")
+                sccore = extract_score_from_string(llm_scorrer)
+                logger.debug(f"llm_scorrer extracted: {sccore}")
 
-        ### 计算token数
+                ### 计算token数
         encoded = tokenizer(answer, add_special_tokens=False)
         token_ids = encoded["input_ids"]
 
@@ -177,8 +196,11 @@ def single_test_workflow_non_stream_pressure(
             try:
                 sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
             except Exception as e:
+                logger.error("llm_scorrer json error")
                 logger.error(e)
                 logger.error(f"llm_scorrer: {llm_scorrer}")
+                sccore = extract_score_from_string(llm_scorrer)
+                logger.debug(f"llm_scorrer extracted: {sccore}")
 
         ### 计算token数
         encoded = tokenizer(answer, add_special_tokens=False)
@@ -500,3 +522,54 @@ def upload_to_tos(local_path: Path, object_key: str) -> str:
     except Exception as e:
         logger.exception(f"TOS 未知错误: {e}")
         raise
+
+
+def download_from_tos(object_key: str, local_path: str):
+    """从火山 TOS 下载文件"""
+    ak = "AKLTNmIxZmJmN2E0ZTY0NDA3NTg0M2Y0MTdiOTllNWMxYTk"
+    sk = "TkRWaVkyRmlZbUZpWVRVMk5EbGpNbUV5T0dNNFpqQmlaVFEwTVRnNFpXUQ=="
+    endpoint = "tos-cn-beijing.volces.com"
+    region = "cn-beijing"
+    bucket_name = "dify-agent-pressure-test"
+
+    client = tos.TosClientV2(ak, sk, endpoint, region)
+    try:
+        logger.info(f"📥 正在下载: {object_key} → {local_path}")
+        with open(local_path, "wb") as f:
+            obj = client.get_object(bucket_name, object_key)
+            for chunk in obj:
+                f.write(chunk)
+        logger.success(f"✅ 下载成功: {object_key}")
+    except Exception as e:
+        logger.error(f"❌ 下载失败: {e}")
+        raise
+
+
+def compute_md5_bytes(data: Union[bytes, str, Path]) -> str:
+    """
+    计算任意数据或文件内容的 MD5 值。
+
+    参数：
+        data: bytes 或 文件路径（str/Path）
+
+    返回：
+        str: 32 位十六进制 MD5 字符串
+    """
+    md5 = hashlib.md5()
+
+    # ✅ 情况1：如果传入的是 bytes，直接计算
+    if isinstance(data, bytes):
+        md5.update(data)
+        return md5.hexdigest()
+
+    # ✅ 情况2：如果传入的是文件路径，分块读取
+    file_path = Path(data)
+    if not file_path.exists():
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+
+    with file_path.open("rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            md5.update(chunk)
+
+    return md5.hexdigest()
+

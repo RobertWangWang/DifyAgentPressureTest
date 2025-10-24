@@ -3,14 +3,16 @@ import pandas as pd
 import numpy as np
 import asyncio
 import aiohttp
-from fastapi import Request
+from fastapi import Request, HTTPException
 from sqlalchemy.orm import Session
+import os
 
 from app.utils.pressure_test_util import (
     single_test_chatflow_non_stream_pressure,
     single_test_workflow_non_stream_pressure,
     validate_entry,
     get_agent_input_para_dict,
+    download_from_tos
 )
 from app.core.database import SessionLocal
 from app.utils.logger import logger
@@ -268,42 +270,70 @@ async def run_workflow_tests_async(
 # ==========================================================
 
 async def test_chatflow_non_stream_pressure_wrapper(
-    testrecord: TestRecord,
-    request: Request,
-    db: Session,
+    testrecord,
+    request,
+    db,
     mode: str,
 ):
-    """Chatflow 压测任务包装器（同步检测取消）"""
+    """
+    Chatflow 压测任务包装器（从 TOS 下载数据集、执行后清理临时文件）
+    """
 
+    # 基本参数
     input_dify_url = testrecord.dify_api_url
     input_dify_api_key = testrecord.dify_api_key
     input_username = testrecord.dify_username
-    input_dify_test_file = Path("uploads/" + testrecord.filename).resolve()
     input_concurrency = testrecord.concurrency
     input_judge_prompt = testrecord.judge_prompt
+    dataset_key = testrecord.dataset_tos_key
 
-    # 读取文件
-    if input_dify_test_file.suffix == ".csv":
-        df = await asyncio.to_thread(pd.read_csv, input_dify_test_file)
-    elif input_dify_test_file.suffix == ".xlsx":
-        df = await asyncio.to_thread(pd.read_excel, input_dify_test_file, engine="openpyxl")
-    else:
-        raise ValueError("Unsupported file type. Only .csv and .xlsx are supported.")
+    if not dataset_key:
+        raise ValueError("❌ 当前记录缺少 dataset_tos_key，无法从 TOS 下载数据集。")
 
-    if mode == "experiment":
-        df = df.head(3)
+    # 1️⃣ 下载数据集到临时文件
+    tmp_dir = Path("uploads/tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{testrecord.uuid}_{os.path.basename(dataset_key)}"
 
-    # 获取 schema 并验证
+    try:
+        logger.info(f"⬇️ 正在从 TOS 下载数据集: {dataset_key} → {tmp_path}")
+        await asyncio.to_thread(download_from_tos, dataset_key, tmp_path)
+        logger.success(f"✅ 数据集下载完成: {tmp_path}")
+    except Exception as e:
+        logger.error(f"❌ 从 TOS 下载失败: {e}")
+        raise RuntimeError(f"下载 TOS 数据集失败: {e}")
+
+    # 2️⃣ 读取文件内容
+    try:
+        suffix = tmp_path.suffix.lower()
+        if suffix == ".csv":
+            df = await asyncio.to_thread(pd.read_csv, tmp_path)
+        elif suffix in [".xls", ".xlsx"]:
+            df = await asyncio.to_thread(pd.read_excel, tmp_path, engine="openpyxl")
+        else:
+            raise ValueError(f"Unsupported file type: {suffix}")
+
+        if mode == "experiment":
+            df = df.head(3)
+
+        logger.info(f"✅ 数据集 {tmp_path.name} 读取成功，共 {len(df)} 行")
+    except Exception as e:
+        logger.error(f"❌ 文件读取失败: {e}")
+        raise HTTPException(status_code=400, detail=f"无法读取文件内容: {e}")
+
+    # 3️⃣ 验证输入
     para_df = await asyncio.to_thread(get_agent_input_para_dict, input_dify_url, input_dify_api_key)
     df = align_dify_input_types(df, para_df)
     for _, row in df.iterrows():
         row_dict = row.to_dict()
         error = validate_entry(row_dict, para_df)
         if error:
-            return {"error": error}
+            raise ValueError(f"输入验证失败: {error}")
+
+    # 4️⃣ 更新状态为 RUNNING
+    TestRecordCRUD.update_by_uuid(db, testrecord.uuid, status=TestStatus.RUNNING)
 
     llm = request.session.get("llm")
-    TestRecordCRUD.update_by_uuid(db, testrecord.uuid, status=TestStatus.RUNNING)
 
     try:
         results = await run_chatflow_tests_async(
@@ -321,12 +351,21 @@ async def test_chatflow_non_stream_pressure_wrapper(
         TestRecordCRUD.update_by_uuid(db, testrecord.uuid, status=TestStatus.CANCELLED)
         logger.warning(f"任务 {testrecord.uuid} 被取消")
         return {"cancelled": True}
+    finally:
+        # 5️⃣ 清理临时文件
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+                logger.info(f"🧹 已清理临时文件: {tmp_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ 清理临时文件失败: {e}")
 
+    # 6️⃣ 计算结果
     avg_time = sum(ele.get("time_consumption") for ele in results) / len(results)
     total_time = sum(ele.get("time_consumption") for ele in results)
     avg_token = sum(ele.get("token_num") for ele in results) / len(results)
     avg_TPS = sum(ele.get("TPS") for ele in results) / len(results)
-    avg_score = sum(ele.get("score") for ele in results) / len(results)
+    avg_score = sum(float(ele.get("score")) for ele in results) / len(results)
 
     result_dict = {
         "avg_time_consumption": avg_time,
@@ -335,53 +374,85 @@ async def test_chatflow_non_stream_pressure_wrapper(
         "avg_score": avg_score,
     }
 
-    logger.success(f"Chatflow 测试结果: {result_dict}, 模式: {mode}")
-    update_data_dict = {
-        "status": TestStatus.EXPERIMENT if mode == "experiment" else TestStatus.SUCCESS,
-        "duration": total_time,
-        "result": result_dict,
-    }
-    TestRecordCRUD.update_by_uuid(db, testrecord.uuid, **update_data_dict)
+    # 7️⃣ 更新数据库状态
+    TestRecordCRUD.update_by_uuid(
+        db,
+        testrecord.uuid,
+        status=TestStatus.EXPERIMENT if mode == "experiment" else TestStatus.SUCCESS,
+        duration=total_time,
+        result=result_dict,
+    )
+
+    logger.success(f"✅ Chatflow 压测完成: {result_dict} (mode={mode})")
     return result_dict
 
 
 async def test_workflow_non_stream_pressure_wrapper(
-    testrecord: TestRecord,
-    request: Request,
-    db: Session,
+    testrecord,
+    request,
+    db,
     mode: str,
 ):
-    """Workflow 压测任务包装器（同步检测取消）"""
+    """Workflow 压测任务包装器（从 TOS 下载数据集并在完成后清理临时文件）"""
 
+    # 1️⃣ 读取基本任务参数
     input_dify_url = testrecord.dify_api_url
     input_dify_api_key = testrecord.dify_api_key
     input_username = testrecord.dify_username
-    input_dify_test_file = Path("uploads/" + testrecord.filename).resolve()
     input_concurrency = testrecord.concurrency
     input_judge_prompt = testrecord.judge_prompt
+    dataset_key = testrecord.dataset_tos_key
 
-    if input_dify_test_file.suffix == ".csv":
-        df = await asyncio.to_thread(pd.read_csv, input_dify_test_file)
-    elif input_dify_test_file.suffix == ".xlsx":
-        df = await asyncio.to_thread(pd.read_excel, input_dify_test_file, engine="openpyxl")
-    else:
-        raise ValueError("Unsupported file type. Only .csv and .xlsx are supported.")
+    if not dataset_key:
+        raise ValueError("❌ 当前记录缺少 dataset_tos_key，无法从 TOS 下载数据集。")
 
-    if mode == "experiment":
-        df = df.head(3)
+    # 2️⃣ 下载数据集至临时目录
+    tmp_dir = Path("uploads/tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{testrecord.uuid}_{os.path.basename(dataset_key)}"
 
+    try:
+        logger.info(f"⬇️ 正在从 TOS 下载数据集: {dataset_key} → {tmp_path}")
+        await asyncio.to_thread(download_from_tos, dataset_key, tmp_path)
+        logger.success(f"✅ 数据集下载完成: {tmp_path}")
+    except Exception as e:
+        logger.error(f"❌ 从 TOS 下载失败: {e}")
+        raise RuntimeError(f"下载 TOS 数据集失败: {e}")
+
+    # 3️⃣ 读取文件内容
+    try:
+        suffix = tmp_path.suffix.lower()
+        if suffix == ".csv":
+            df = await asyncio.to_thread(pd.read_csv, tmp_path)
+        elif suffix in [".xls", ".xlsx"]:
+            df = await asyncio.to_thread(pd.read_excel, tmp_path, engine="openpyxl")
+        else:
+            raise ValueError(f"Unsupported file type: {suffix}")
+
+        if mode == "experiment":
+            df = df.head(3)
+
+        logger.info(f"✅ 数据集 {tmp_path.name} 读取成功，共 {len(df)} 行")
+    except Exception as e:
+        logger.error(f"❌ 文件解析失败: {e}")
+        raise RuntimeError(f"无法读取文件内容: {e}")
+
+    # 4️⃣ 获取参数模板并验证输入
     para_df = await asyncio.to_thread(get_agent_input_para_dict, input_dify_url, input_dify_api_key)
     df = align_dify_input_types(df, para_df)
     for _, row in df.iterrows():
         row_dict = row.to_dict()
         error = validate_entry(row_dict, para_df)
         if error:
-            return {"error": error}
+            raise ValueError(f"输入验证失败: {error}")
 
-    llm = request.session.get("llm")
+    # 5️⃣ 更新任务状态为 RUNNING
     TestRecordCRUD.update_by_uuid(db, testrecord.uuid, status=TestStatus.RUNNING)
 
+    llm = request.session.get("llm")
+
     try:
+        # 6️⃣ 执行 Workflow 压测任务
         results = await run_workflow_tests_async(
             df,
             input_uuid=testrecord.uuid,
@@ -394,10 +465,20 @@ async def test_workflow_non_stream_pressure_wrapper(
             db=db,
         )
     except asyncio.CancelledError:
+        # 用户主动取消
         TestRecordCRUD.update_by_uuid(db, testrecord.uuid, status=TestStatus.CANCELLED)
         logger.warning(f"任务 {testrecord.uuid} 被取消")
         return {"cancelled": True}
+    finally:
+        # 7️⃣ 清理临时文件
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+                logger.info(f"🧹 已清理临时文件: {tmp_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ 清理临时文件失败: {e}")
 
+    # 8️⃣ 汇总评测结果
     avg_time = sum(ele.get("time_consumption") for ele in results) / len(results)
     total_time = sum(ele.get("time_consumption") for ele in results)
     avg_token = sum(ele.get("token_num") for ele in results) / len(results)
@@ -411,11 +492,15 @@ async def test_workflow_non_stream_pressure_wrapper(
         "avg_score": avg_score,
     }
 
-    logger.success(f"Workflow 测试结果: {result_dict}, 模式: {mode}")
-    update_data_dict = {
-        "status": TestStatus.EXPERIMENT if mode == "experiment" else TestStatus.SUCCESS,
-        "duration": total_time,
-        "result": result_dict,
-    }
-    TestRecordCRUD.update_by_uuid(db, testrecord.uuid, **update_data_dict)
+    # 9️⃣ 更新任务结果状态
+    TestRecordCRUD.update_by_uuid(
+        db,
+        testrecord.uuid,
+        status=TestStatus.EXPERIMENT if mode == "experiment" else TestStatus.SUCCESS,
+        duration=total_time,
+        result=result_dict,
+    )
+
+    logger.success(f"✅ Workflow 压测完成: {result_dict} (mode={mode})")
     return result_dict
+

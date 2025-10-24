@@ -21,6 +21,8 @@ JUDGE_PROMPT = """
 以json的格式返回你的结果，json的格式如下：
 {"score":《你给出的分数》}
 
+注意，返回格式只能是json，不要输出你的思考内容
+
 """
 
 # 尝试导入 Volcengine Ark 的 SDK（如果你安装了的话）

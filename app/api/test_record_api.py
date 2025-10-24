@@ -1,11 +1,10 @@
 import pandas as pd
+import io
 from pathlib import Path
 from typing import List
 from starlette.datastructures import UploadFile as StarletteUploadFile
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status, Query, Body
-from starlette.responses import JSONResponse
-from fastapi import BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status, Query, Body, BackgroundTasks
+from starlette.responses import JSONResponse, StreamingResponse
 from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -13,8 +12,10 @@ import asyncio
 import hashlib
 
 from app.crud.test_record_crud import TestRecordCRUD
+from app.crud.dataset_crud import DatasetCRUD
+from app.models.dataset import Dataset
 from app.models.provider_model import ProviderModel
-from app.models.test_record import TestStatus
+from app.models.test_record import TestRecord, TestStatus, AgentType
 from app.schemas.test_record_schema import (
     TestRecordCreate,
     TestRecordRead,
@@ -22,8 +23,9 @@ from app.schemas.test_record_schema import (
     PaginatedTestRecordResponse,
     TestRecordsByUUIDAndBearerToken,
     TestRecordStatus,
-    AgentParameterRequest
+    AgentParameterRequest,
 )
+from app.schemas.dataset_schema import DatasetCreate, DatasetRead
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.services.test_record_services import (
@@ -31,8 +33,6 @@ from app.services.test_record_services import (
     test_workflow_non_stream_pressure_wrapper,
 )
 from app.services.provider_model_services import llm_connection_test
-
-# ✅ 导入 util 工具函数
 from app.utils.pressure_test_util import (
     dify_api_url_2_agent_apikey_url,
     dify_api_url_2_agent_api_app_url,
@@ -44,12 +44,12 @@ from app.utils.pressure_test_util import (
     get_workflow_parameter_template,
     get_chatflow_parameter_template,
     AgentType,
-    upload_to_tos
+    upload_to_tos,
 )
-
 from loguru import logger
 
 router = APIRouter(prefix="/test_records", tags=["TestChatflowRecords"])
+
 
 def get_db():
     db = SessionLocal()
@@ -58,136 +58,193 @@ def get_db():
     finally:
         db.close()
 
+
 def compute_md5_bytes(data: bytes) -> str:
     """计算文件内容的 MD5"""
     md5 = hashlib.md5()
     md5.update(data)
     return md5.hexdigest()
 
-@router.post("/", response_model=dict, status_code=status.HTTP_201_CREATED)
-async def create_record(request: Request, db: Session = Depends(get_db)):
-    """接收文件 + 表单参数，返回文件前三行内容并写入数据库（并上传至火山 TOS）"""
-    content_type = request.headers.get("content-type", "").lower()
 
-    if not content_type.startswith("multipart/form-data"):
-        raise HTTPException(status_code=415, detail="Request content type must be multipart/form-data with a file upload.")
-
-    async def _persist_upload(upload: StarletteUploadFile) -> Path:
-        """保存上传文件到本地并返回路径"""
-        upload_dir = Path(settings.FILE_UPLOAD_DIR)
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        original_filename = Path(upload.filename or "").name
-        if not original_filename:
-            raise HTTPException(status_code=400, detail="Uploaded file must have a name.")
-
-        stem, suffix = Path(original_filename).stem, Path(original_filename).suffix
-        candidate_name, candidate_path = original_filename, upload_dir / original_filename
-        counter = 1
-        while candidate_path.exists():
-            candidate_name = f"{stem}_{counter}{suffix}"
-            candidate_path = upload_dir / candidate_name
-            counter += 1
-
-        file_bytes = await upload.read()
-        candidate_path.write_bytes(file_bytes)
-        await upload.close()
-        return candidate_path
-
-    # 1️⃣ 解析 form-data
+# ==========================================================
+# ✅ 上传数据集文件（Dataset 拆表后）
+# ==========================================================
+@router.post("/upload", response_model=DatasetRead, status_code=status.HTTP_201_CREATED)
+async def upload_dataset(request: Request, db: Session = Depends(get_db)):
+    """
+    上传数据集文件到火山 TOS，计算 MD5 并写入 Dataset 表。
+    若相同 MD5 文件已存在，则直接复用。
+    """
     form = await request.form()
     upload = form.get("file")
+    uploaded_by = form.get("uploaded_by", "anonymous")
 
     if not isinstance(upload, StarletteUploadFile):
-        raise HTTPException(status_code=400, detail="A 'file' upload is required and must be provided as a file.")
+        raise HTTPException(status_code=400, detail="必须包含 file 字段")
 
-    payload_data: dict[str, str] = {k: v for k, v in form.multi_items() if k != "file"}
+    # ✅ 读取文件内容并计算 MD5
+    file_bytes = await upload.read()
+    suffix = Path(upload.filename).suffix.lower()
+    file_md5 = compute_md5_bytes(file_bytes)
+    logger.info(f"📦 上传文件 {upload.filename} 的 MD5: {file_md5}")
 
-    # 2️⃣ 保存文件
-    file_path = await _persist_upload(upload)
+    # ✅ 查重逻辑
+    existing = DatasetCRUD.get_by_md5(db, file_md5)
+    if existing:
+        logger.info(f"✅ 文件已存在，复用数据集: {existing.tos_url}")
+        return existing
 
-    # 3️⃣ 读取文件前 3 行
+    # ✅ 写入临时文件
+    upload_dir = Path(settings.FILE_UPLOAD_DIR)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = upload_dir / f"{file_md5}{suffix}"
+    tmp_path.write_bytes(file_bytes)
+
+    # ✅ 上传至 TOS
+    tos_key = f"datasets/{file_md5}{suffix}"
     try:
-        suffix = file_path.suffix.lower()
-        if suffix == ".csv":
-            df = pd.read_csv(file_path)
-        elif suffix in [".xls", ".xlsx"]:
-            df = pd.read_excel(file_path)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
-        preview_rows = df.head(3).to_dict(orient="records")
-        logger.info(f"✅ 文件 {file_path.name} 前 3 行内容: {preview_rows}")
+        tos_url = await asyncio.to_thread(upload_to_tos, tmp_path, tos_key)
+        logger.info(f"✅ 上传至 TOS 成功: {tos_url}")
     except Exception as e:
-        logger.error(f"❌ 文件解析失败: {e}")
-        raise HTTPException(status_code=400, detail=f"无法读取文件内容: {e}")
+        logger.error(f"❌ 上传至 TOS 失败: {e}")
+        raise HTTPException(status_code=500, detail=f"TOS 上传失败: {e}")
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+            logger.info(f"🧹 已删除本地临时文件: {tmp_path}")
 
-    # 4️⃣ 校验 payload
+    # ✅ 生成文件预览
+    preview_rows = []
     try:
-        record_payload = TestRecordCreate(**payload_data)
-    except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        if suffix == ".csv":
+            df = pd.read_csv(io.BytesIO(file_bytes))
+        elif suffix in [".xls", ".xlsx"]:
+            df = pd.read_excel(io.BytesIO(file_bytes))
+        preview_rows = df.head(3).to_dict(orient="records")
+    except Exception as e:
+        logger.warning(f"⚠️ 预览文件内容失败（非关键步骤）{e}")
 
-    # 5️⃣ 生成 Dify API Key
+    # ✅ 写入 Dataset 表
+    dataset = DatasetCreate(
+        filename=upload.filename,
+        file_md5=file_md5,
+        file_suffix=suffix,
+        tos_key=tos_key,
+        tos_url=tos_url,
+        preview_rows=preview_rows,
+        uploaded_by=uploaded_by,
+    )
+    created = DatasetCRUD.create(db, dataset)
+    logger.info(f"✅ 数据集写入成功: uuid={created.uuid}")
+    return created
+
+
+# ==========================================================
+# ✅ 创建评测任务（引用 dataset_uuid）
+# ==========================================================
+@router.post("/create_record", response_model=dict, status_code=status.HTTP_201_CREATED)
+async def create_record(request: Request, db: Session = Depends(get_db)):
+    """
+    创建评测任务（通过 dataset_file_md5 引用 Dataset）
+    - 不要求 dataset_uuid
+    - agent_type 和 agent_name 由 Dify 自动补全
+    - 同步创建 Dify API Key 并验证 LLM 连接
+    """
+    json_data = await request.json()
     try:
-        api_key_url = dify_api_url_2_agent_apikey_url(record_payload.dify_api_url, record_payload.dify_test_agent_id)
+        record_payload = TestRecordCreate(**json_data)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
+    file_md5 = json_data.get("dataset_file_md5")
+    if not file_md5:
+        raise HTTPException(status_code=400, detail="必须提供 dataset_file_md5")
+
+    # ✅ 1. 查找数据集
+    dataset_info = DatasetCRUD.get_by_md5(db, file_md5)
+    if not dataset_info:
+        raise HTTPException(status_code=404, detail="未找到对应数据集，请先上传")
+
+    # ✅ 2. 生成 Dify API Key
+    try:
+        api_key_url = dify_api_url_2_agent_apikey_url(
+            record_payload.dify_api_url, record_payload.dify_test_agent_id
+        )
         existing_keys = get_dify_agent_api_key(api_key_url, record_payload.dify_bearer_token)
-        token_value = existing_keys[0].get("token") if existing_keys else create_dify_agent_api_key(api_key_url, record_payload.dify_bearer_token).get("token")
+        token_value = (
+            existing_keys[0].get("token")
+            if existing_keys
+            else create_dify_agent_api_key(api_key_url, record_payload.dify_bearer_token).get("token")
+        )
         if not token_value:
             raise ValueError("Dify 返回无效 API Key")
         record_payload.dify_api_key = token_value
+        logger.info("✅ 已生成 Dify API Key")
     except Exception as e:
-        logger.error(f"❌ 生成 Dify API Key 失败: {e}")
+        logger.error(f"❌ 创建 Dify API Key 失败: {e}")
         raise HTTPException(status_code=500, detail=f"创建 Dify API Key 失败: {e}")
 
-    # 6️⃣ 获取 Agent 信息
+    # ✅ 3. 创建 TestRecord 基础记录（agent_type/agent_name 暂为空）
+    payload_dict = record_payload.model_dump(exclude={"agent_type", "agent_name"})
+    payload_dict['dataset_uuid'] = dataset_info.uuid
+    created = TestRecordCRUD.create(
+        db,
+        filename=dataset_info.filename,
+        dataset_tos_key=dataset_info.tos_key,
+        dataset_tos_url=dataset_info.tos_url,
+        dify_account_id="",  # ✅ 占位
+        agent_type=AgentType.CHATFLOW,  # ✅ 占位
+        agent_name="",  # ✅ 占位
+        **payload_dict,
+    )
+    logger.info(f"✅ 已创建测试任务记录 uuid={created.uuid}, dataset_uuid={dataset_info.uuid}")
+
+    # ✅ 4. 获取 Agent 类型与名称
     try:
-        agent_api_app_url = dify_api_url_2_agent_api_app_url(record_payload.dify_api_url, record_payload.dify_test_agent_id)
-        data_dict = dify_get_agent_type_and_agent_name(agent_api_app_url, record_payload.dify_bearer_token)
-        record_payload.agent_type, record_payload.agent_name = data_dict["agent_type"], data_dict["agent_name"]
-    except Exception as e:
-        logger.error(f"❌ 获取 Agent 类型失败: {e}")
-        raise HTTPException(status_code=500, detail=f"获取 Dify Agent 类型失败: {e}")
+        agent_api_app_url = dify_api_url_2_agent_api_app_url(
+            record_payload.dify_api_url, record_payload.dify_test_agent_id
+        )
+        info = dify_get_agent_type_and_agent_name(agent_api_app_url, record_payload.dify_bearer_token)
+        agent_type = info.get("agent_type")
+        agent_name = info.get("agent_name")
 
-    # 7️⃣ 获取 Account ID
+        if agent_type and agent_name:
+            TestRecordCRUD.update_by_uuid(db, created.uuid, agent_type=agent_type, agent_name=agent_name)
+            logger.info(f"✅ 已更新 agent_type={agent_type}, agent_name={agent_name}")
+    except Exception as e:
+        logger.warning(f"⚠️ 获取 Agent 信息失败（非关键步骤）: {e}")
+
+    # ✅ 5. 获取 Dify Account ID
     try:
-        dify_account_profile_url = dify_api_url_2_account_profile_url(record_payload.dify_api_url)
-        record_payload.dify_account_id = dify_get_account_id(dify_account_profile_url, record_payload.dify_bearer_token)
+        account_profile_url = dify_api_url_2_account_profile_url(record_payload.dify_api_url)
+        dify_account_id = dify_get_account_id(account_profile_url, record_payload.dify_bearer_token)
+        TestRecordCRUD.update_by_uuid(db, created.uuid, dify_account_id=dify_account_id)
+        logger.info(f"✅ 已更新 Dify Account ID: {dify_account_id}")
     except Exception as e:
-        logger.error(f"❌ 获取 Dify Account ID 失败: {e}")
-        raise HTTPException(status_code=500, detail=f"获取 Dify Account ID 失败: {e}")
+        logger.warning(f"⚠️ 获取 Dify Account ID 失败（非关键步骤）: {e}")
 
-    # 8️⃣ 获取 LLM 到 session
-    judge_model = form.get("judge_model")
-    judge_model_provider_name = form.get("judge_model_provider_name")
-    llm_models = db.query(ProviderModel).filter(
-        ProviderModel.provider_name == judge_model_provider_name,
-        ProviderModel.model_name == judge_model,
-    ).all()
-    llm = llm_connection_test(candidate_models=llm_models)
-    request.session["llm"] = llm
-
-    # 9️⃣ 写入数据库
-    payload_dict = record_payload.model_dump()
-    payload_dict.pop("dataset_absolute_path", None)
-    created = TestRecordCRUD.create(db, filename=file_path.name, dataset_absolute_path=str(file_path.resolve()), **payload_dict)
-    request.session["dify_agent_pressure_task_uuid"] = created.uuid
-
-    # 🔟 异步上传到火山 TOS
-    tos_url = None
+    # ✅ 6. 验证 LLM 可用性
     try:
-        tos_object_key = f"datasets/{file_path.name}"
-        tos_url = await asyncio.to_thread(upload_to_tos, file_path, tos_object_key)
+        judge_model = record_payload.judge_model
+        provider = record_payload.judge_model_provider_name
+        llm_models = (
+            db.query(ProviderModel)
+            .filter(ProviderModel.provider_name == provider, ProviderModel.model_name == judge_model)
+            .all()
+        )
+        llm = llm_connection_test(candidate_models=llm_models)
+        request.session["llm"] = llm
+        logger.info("✅ LLM 模型连接测试通过")
     except Exception as e:
-        logger.error(f"❌ 上传至火山 TOS 失败: {e}")
+        logger.warning(f"⚠️ LLM 模型连接失败（非关键步骤）: {e}")
 
-    # ✅ 返回结果
+    # ✅ 7. 返回结果
     return JSONResponse(
         content={
-            "message": "✅ 文件上传并创建记录成功",
-            "uploaded_filename": file_path.name,
-            "file_absolute_path": str(file_path.resolve()),
-            "file_tos_url": tos_url,  # ✅ 新增字段
-            "file_preview": preview_rows,
-            "created_record": created.to_dict(exclude_none=True),
+            "message": "✅ 评测任务创建成功",
+            "record_uuid": created.uuid,
+            "dataset_file_md5": file_md5,
+            "dataset_tos_url": dataset_info.tos_url,
         }
     )
 

@@ -1,18 +1,26 @@
 from typing import List, Optional, Any, Dict
 from sqlalchemy import select, update, delete, text, func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import SQLAlchemyError
 from pathlib import Path
 import pandas as pd
-from fastapi.responses import JSONResponse
+import os
 
 from app.models import TestRecord, TestStatus
+from app.models.dataset import Dataset
 from app.core.database import SessionLocal
-from app.schemas.test_record_schema import TestRecordRead
-from app.utils.pressure_test_util import dify_get_account_id, dify_api_url_2_account_profile_url
+from app.schemas.dataset_schema import DatasetRead
+from app.schemas.test_record_schema import TestRecordRead, TestRecordStatus
+from app.utils.pressure_test_util import (
+    dify_get_account_id,
+    dify_api_url_2_account_profile_url,
+    download_from_tos
+)
+from loguru import logger
 
 
 class TestRecordCRUD:
+    # ---------------------- 创建 ----------------------
 
     @staticmethod
     def create(
@@ -33,9 +41,12 @@ class TestRecordCRUD:
         result: Optional[str] = None,
         concurrency: int = 1,
         dify_api_key: Optional[str] = None,
-        judge_model: str = None,
-        judge_model_provider_name: str = None,
-        dataset_absolute_path: Optional[str] = None,
+        judge_model: Optional[str] = None,
+        judge_model_provider_name: Optional[str] = None,
+        dataset_uuid: Optional[str] = None,  # ✅ 新增
+        dataset_file_md5: Optional[str] = None,
+        dataset_tos_key: Optional[str] = None,
+        dataset_tos_url: Optional[str] = None,
         is_deleted: bool = False,
     ) -> TestRecord:
         """创建测试记录"""
@@ -57,35 +68,42 @@ class TestRecordCRUD:
             judge_prompt=judge_prompt,
             judge_model=judge_model,
             judge_model_provider_name=judge_model_provider_name,
-            dataset_absolute_path=dataset_absolute_path,
-            is_deleted=is_deleted,  # ✅ 新增：默认未删除
+            dataset_uuid=dataset_uuid,  # ✅ 新外键
+            dataset_file_md5=dataset_file_md5,
+            dataset_tos_key=dataset_tos_key,
+            dataset_tos_url=dataset_tos_url,
+            is_deleted=is_deleted,
         )
 
         try:
             session.add(record)
             session.commit()
             session.refresh(record)
+            logger.info(f"✅ 创建测试记录成功 uuid={record.uuid}, dataset_uuid={dataset_uuid}")
         except SQLAlchemyError as e:
             session.rollback()
+            logger.error(f"❌ 创建测试记录失败: {e}")
             raise e
 
         return record
 
-    # ---------------------- 查询操作 ----------------------
+    # ---------------------- 查询 ----------------------
 
     @staticmethod
     def get_by_uuid(session: Session, uuid_str: str) -> Optional[TestRecord]:
-        stmt = select(TestRecord).where(
-            TestRecord.uuid == uuid_str,
-            TestRecord.is_deleted.is_(False),  # ✅ 排除软删除
+        stmt = (
+            select(TestRecord)
+            .options(joinedload(TestRecord.dataset))  # ✅ 自动关联 Dataset
+            .where(TestRecord.uuid == uuid_str, TestRecord.is_deleted.is_(False))
         )
         return session.scalars(stmt).first()
 
     @staticmethod
     def get_by_agent_id(session: Session, agent_id: str) -> Optional[TestRecord]:
-        stmt = select(TestRecord).where(
-            TestRecord.dify_test_agent_id == agent_id,
-            TestRecord.is_deleted.is_(False),
+        stmt = (
+            select(TestRecord)
+            .options(joinedload(TestRecord.dataset))
+            .where(TestRecord.dify_test_agent_id == agent_id, TestRecord.is_deleted.is_(False))
         )
         return session.scalars(stmt).first()
 
@@ -93,14 +111,15 @@ class TestRecordCRUD:
     def list_all(session: Session, limit: int = 100, offset: int = 0) -> List[TestRecord]:
         stmt = (
             select(TestRecord)
-            .where(TestRecord.is_deleted.is_(False))  # ✅ 排除软删除
+            .options(joinedload(TestRecord.dataset))
+            .where(TestRecord.is_deleted.is_(False))
             .order_by(TestRecord.created_at.desc())
             .offset(offset)
             .limit(limit)
         )
         return list(session.scalars(stmt).all())
 
-    # ---------------------- 更新操作 ----------------------
+    # ---------------------- 更新 ----------------------
 
     @staticmethod
     def update_by_uuid(session: Session, uuid_str: str, **kwargs: Any) -> Optional[TestRecord]:
@@ -119,17 +138,19 @@ class TestRecordCRUD:
         try:
             session.execute(stmt)
             session.commit()
+            logger.info(f"🛠️ 更新测试记录 {uuid_str} 字段: {list(update_data.keys())}")
         except SQLAlchemyError as e:
             session.rollback()
+            logger.error(f"❌ 更新测试记录失败: {e}")
             raise e
 
         return TestRecordCRUD.get_by_uuid(session, uuid_str)
 
-    # ---------------------- 删除/恢复操作 ----------------------
+    # ---------------------- 删除/恢复 ----------------------
 
     @staticmethod
     def delete_by_uuid(session: Session, uuid_str: str) -> bool:
-        """软删除（将 is_deleted 设置为 True）"""
+        """软删除"""
         stmt = (
             update(TestRecord)
             .where(TestRecord.uuid == uuid_str)
@@ -139,14 +160,16 @@ class TestRecordCRUD:
         try:
             result = session.execute(stmt)
             session.commit()
+            logger.info(f"🗑️ 已软删除测试记录: {uuid_str}")
         except SQLAlchemyError as e:
             session.rollback()
+            logger.error(f"❌ 删除测试记录失败: {e}")
             raise e
-        return result.rowcount is not None and result.rowcount > 0
+        return result.rowcount > 0
 
     @staticmethod
     def restore_by_uuid(session: Session, uuid_str: str) -> bool:
-        """恢复软删除的记录"""
+        """恢复软删除"""
         stmt = (
             update(TestRecord)
             .where(TestRecord.uuid == uuid_str)
@@ -156,38 +179,11 @@ class TestRecordCRUD:
         try:
             result = session.execute(stmt)
             session.commit()
+            logger.info(f"♻️ 已恢复测试记录: {uuid_str}")
         except SQLAlchemyError as e:
             session.rollback()
             raise e
-        return result.rowcount is not None and result.rowcount > 0
-
-    # ---------------------- 统计操作 ----------------------
-
-    @staticmethod
-    def increment_success_count(uuid_str: str):
-        with SessionLocal() as session:
-            session.execute(
-                text("""
-                    UPDATE test_records
-                    SET success_count = success_count + 1
-                    WHERE uuid = :uuid_str AND is_deleted = 0
-                """),
-                {"uuid_str": uuid_str},
-            )
-            session.commit()
-
-    @staticmethod
-    def increment_failure_count(uuid_str: str):
-        with SessionLocal() as session:
-            session.execute(
-                text("""
-                    UPDATE test_records
-                    SET failure_count = failure_count + 1
-                    WHERE uuid = :uuid_str AND is_deleted = 0
-                """),
-                {"uuid_str": uuid_str},
-            )
-            session.commit()
+        return result.rowcount > 0
 
     # ---------------------- 分页查询 ----------------------
 
@@ -196,6 +192,7 @@ class TestRecordCRUD:
         with SessionLocal() as session:
             stmt = (
                 select(TestRecord)
+                .options(joinedload(TestRecord.dataset))
                 .where(
                     TestRecord.dify_test_agent_id == input_agent_id,
                     TestRecord.is_deleted.is_(False),
@@ -218,105 +215,73 @@ class TestRecordCRUD:
                 "records": [TestRecordRead.model_validate(r) for r in records],
             }
 
-    @staticmethod
-    def get_all_records_by_task_name(input_task_name: str, page: int, page_size: int):
-        with SessionLocal() as session:
-            stmt = (
-                select(TestRecord)
-                .where(
-                    TestRecord.task_name == input_task_name,
-                    TestRecord.is_deleted.is_(False),
-                )
-                .offset((page - 1) * page_size)
-                .limit(page_size)
-            )
-            records = session.scalars(stmt).all()
-
-            total_stmt = select(func.count()).select_from(TestRecord).where(
-                TestRecord.task_name == input_task_name,
-                TestRecord.is_deleted.is_(False),
-            )
-            total = session.scalar(total_stmt)
-
-            return {
-                "page": page,
-                "page_size": page_size,
-                "total": total,
-                "records": [TestRecordRead.model_validate(r) for r in records],
-            }
-
     # ---------------------- 数据集预览 ----------------------
 
     @staticmethod
     def get_dataset_first_three_lines(input_uuid: str):
+        """
+        根据测试记录 UUID 获取其关联数据集的前 3 行内容。
+        自动从 TOS 下载文件预览。
+        """
         with SessionLocal() as session:
-            record = TestRecordCRUD.get_by_uuid(session, input_uuid)
+            # ✅ 查询 TestRecord
+            record = session.query(TestRecord).filter(TestRecord.uuid == input_uuid).first()
             if not record:
                 raise ValueError("Record not found or deleted.")
 
-            dataset_path = Path("uploads/" + record.filename).resolve()
-            if dataset_path.suffix == ".csv":
-                df = pd.read_csv(dataset_path)
-            elif dataset_path.suffix == ".xlsx":
-                df = pd.read_excel(dataset_path, engine="openpyxl")
-            else:
-                raise ValueError("Unsupported file type. Only .csv and .xlsx are supported.")
-            return df.head(3).to_dict(orient="records")
+            # ✅ 优先使用 Dataset 外键关联
+            dataset = record.dataset
+            if not dataset:
+                raise ValueError("No dataset linked to this test record.")
 
-    # ---------------------- 根据 agent + bearer_token 查询 ----------------------
+            object_key = dataset.tos_key
+            suffix = dataset.file_suffix or ".csv"
+            tmp_dir = Path("uploads/previews")
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            tmp_path = tmp_dir / f"preview_{dataset.file_md5}{suffix}"
 
-    @staticmethod
-    def get_records_by_uuid_and_bearer_token(input_agent_id: str, bearer_token: str):
-        with SessionLocal() as session:
-            record = TestRecordCRUD.get_by_agent_id(session, input_agent_id)
-            if not record:
-                return []
+            try:
+                # ✅ 从火山 TOS 下载文件
+                download_from_tos(object_key, str(tmp_path))
+                logger.info(f"✅ 从 TOS 下载完成: {tmp_path}")
 
-            input_dify_url = record.dify_api_url
-            input_dify_account_url = dify_api_url_2_account_profile_url(str(input_dify_url))
-            dify_account_id = dify_get_account_id(input_dify_account_url, bearer_token)
+                # ✅ 根据文件类型读取
+                if suffix == ".csv":
+                    df = pd.read_csv(tmp_path)
+                elif suffix in [".xls", ".xlsx"]:
+                    df = pd.read_excel(tmp_path, engine="openpyxl")
+                else:
+                    raise ValueError(f"Unsupported file type: {suffix}")
 
-            stmt = (
-                select(TestRecord)
-                .where(
-                    TestRecord.dify_account_id == dify_account_id,
-                    TestRecord.dify_test_agent_id == input_agent_id,
-                    TestRecord.is_deleted.is_(False),
-                )
-            )
-            records = session.scalars(stmt).all()
-            return [TestRecordRead.model_validate(r) for r in records]
+                preview = df.head(3).to_dict(orient="records")
+                logger.info(f"✅ 预览成功，共 {len(df)} 行，取前 3 行展示")
 
-    # ---------------------- 特殊更新 ----------------------
+                return preview
 
-    @staticmethod
-    def update_judge_model(input_uuid: str, judge_model_name: str):
-        with SessionLocal() as session:
-            TestRecordCRUD.update_by_uuid(session, input_uuid, judge_model=judge_model_name)
+            except Exception as e:
+                logger.error(f"❌ 文件预览失败: {e}")
+                raise RuntimeError(f"Failed to preview dataset: {e}")
 
-    @staticmethod
-    def get_by_uuid_include_deleted(session: Session, uuid_str: str) -> Optional[TestRecord]:
-        """允许返回已软删除的记录"""
-        stmt = select(TestRecord).where(TestRecord.uuid == uuid_str)
-        return session.scalars(stmt).first()
+            finally:
+                # ✅ 清理临时文件
+                try:
+                    if tmp_path.exists():
+                        os.remove(tmp_path)
+                        logger.info(f"🧹 已删除临时文件: {tmp_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 删除临时文件失败: {e}")
 
-    @staticmethod
-    def get_uuid_task_status(input_uuid: str):
-        with SessionLocal() as session:
-            record = TestRecordCRUD.get_by_uuid(session, input_uuid)
-            if not record:
-                raise ValueError("Record not found or deleted.")
-            return record
+    # ---------------------- 模糊搜索 ----------------------
 
     @staticmethod
     def get_records_by_keyword(key_word: str, page: int, page_size: int):
-        """支持关键字模糊搜索（task_name 或 agent_name），可为空"""
-
         with SessionLocal() as session:
-            # 构造基础查询
-            stmt = select(TestRecord).where(TestRecord.is_deleted.is_(False))
+            stmt = (
+                select(TestRecord)
+                .options(joinedload(TestRecord.dataset))
+                .where(TestRecord.is_deleted.is_(False))
+            )
 
-            # 如果 key_word 非空，则添加模糊匹配
             if key_word:
                 like_pattern = f"%{key_word}%"
                 stmt = stmt.where(
@@ -326,11 +291,9 @@ class TestRecordCRUD:
                     )
                 )
 
-            # 分页
             stmt = stmt.order_by(TestRecord.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
             records = session.scalars(stmt).all()
 
-            # 总数统计
             count_stmt = select(func.count()).select_from(TestRecord).where(TestRecord.is_deleted.is_(False))
             if key_word:
                 count_stmt = count_stmt.where(
@@ -347,3 +310,170 @@ class TestRecordCRUD:
                 "total": total,
                 "records": [TestRecordRead.model_validate(r) for r in records],
             }
+
+    @staticmethod
+    def increment_success_count(uuid_str: str) -> bool:
+        """
+        ✅ 成功次数 +1
+        """
+        with SessionLocal() as session:
+            try:
+                session.execute(
+                    text("""
+                         UPDATE test_records
+                         SET success_count = success_count + 1
+                         WHERE uuid = :uuid_str
+                           AND is_deleted = 0
+                         """),
+                    {"uuid_str": uuid_str},
+                )
+                session.commit()
+                logger.debug(f"✅ 成功次数 +1，uuid={uuid_str}")
+                return True
+            except SQLAlchemyError as e:
+                session.rollback()
+                logger.error(f"❌ 成功次数更新失败: {e}")
+                return False
+
+    @staticmethod
+    def increment_failure_count(uuid_str: str) -> bool:
+        """
+        ❌ 失败次数 +1
+        """
+        with SessionLocal() as session:
+            try:
+                session.execute(
+                    text("""
+                         UPDATE test_records
+                         SET failure_count = failure_count + 1
+                         WHERE uuid = :uuid_str
+                           AND is_deleted = 0
+                         """),
+                    {"uuid_str": uuid_str},
+                )
+                session.commit()
+                logger.debug(f"⚠️ 失败次数 +1，uuid={uuid_str}")
+                return True
+            except SQLAlchemyError as e:
+                session.rollback()
+                logger.error(f"❌ 失败次数更新失败: {e}")
+                return False
+
+    @staticmethod
+    def get_records_by_uuid_and_bearer_token(agent_id: str, bearer_token: str):
+        """
+        ✅ 根据 TestRecord UUID 和 Bearer Token 获取该 dify_account 下的所有测试记录
+        """
+        with SessionLocal() as session:
+            # 1️⃣ 获取指定记录
+            record = session.scalar(
+                select(TestRecord).where(
+                    TestRecord.dify_test_agent_id == agent_id,
+                    TestRecord.is_deleted.is_(False)
+                )
+            )
+            if not record:
+                logger.warning(f"❌ 未找到agent_id的对应记录: {agent_id}")
+                return []
+
+            # 2️⃣ 获取 Dify Account ID
+            try:
+                profile_url = dify_api_url_2_account_profile_url(record.dify_api_url)
+                dify_account_id = dify_get_account_id(profile_url, bearer_token)
+                logger.info(f"✅ 获取 dify_account_id 成功: {dify_account_id}")
+            except Exception as e:
+                logger.error(f"❌ 获取 dify_account_id 失败: {e}")
+                return []
+
+            # 3️⃣ 查询该账号下所有测试记录
+            stmt = (
+                select(TestRecord)
+                .where(
+                    TestRecord.dify_account_id == dify_account_id,
+                    TestRecord.is_deleted.is_(False)
+                )
+                .order_by(TestRecord.created_at.desc())
+            )
+            records = session.scalars(stmt).all()
+
+            # 4️⃣ 转换为 Pydantic 模型列表
+            return [TestRecordRead.model_validate(r) for r in records]
+
+    @staticmethod
+    def get_by_uuid_include_deleted(session, uuid_str: str, as_dict: bool = False) -> Optional[TestRecord]:
+        """
+        根据 UUID 获取测试记录（包括软删除的记录）
+        - 支持加载 Dataset 外键
+        - 可选返回 dict
+        """
+        try:
+            stmt = (
+                select(TestRecord)
+                .options(joinedload(TestRecord.dataset))
+                .where(TestRecord.uuid == uuid_str)
+            )
+            record = session.scalars(stmt).first()
+
+            if not record:
+                logger.warning(f"⚠️ 未找到记录: uuid={uuid_str}")
+                return None
+
+            logger.info(
+                f"✅ 查询到记录 uuid={record.uuid}, is_deleted={record.is_deleted}, "
+                f"dataset_uuid={getattr(record.dataset, 'uuid', None)}"
+            )
+
+            if as_dict:
+                data = record.to_dict(exclude_none=True)
+                if record.dataset:
+                    data["dataset"] = record.dataset.to_dict(exclude_none=True)
+                return data
+
+            return record
+
+        except Exception as e:
+            logger.error(f"❌ 查询记录失败: uuid={uuid_str}, 错误={e}")
+            raise
+
+    @staticmethod
+    def get_uuid_task_status(uuid: str) -> TestRecordStatus:
+        """
+        根据 UUID 获取测试任务状态（包含 dataset 信息）
+        """
+        with SessionLocal() as session:
+            try:
+                stmt = (
+                    select(TestRecord)
+                    .options(joinedload(TestRecord.dataset))
+                    .where(TestRecord.uuid == uuid)
+                )
+                record = session.scalars(stmt).first()
+
+                if not record:
+                    logger.warning(f"⚠️ 未找到测试任务: uuid={uuid}")
+                    raise ValueError("Record not found or deleted.")
+
+                # ✅ 组装结果
+                result = {
+                    "uuid": record.uuid,
+                    "status": record.status,
+                    "task_name": record.task_name,
+                    "agent_name": record.agent_name,
+                    "is_deleted": record.is_deleted,
+                }
+
+                # ✅ 如果有关联数据集，则附带数据集摘要
+                if record.dataset:
+                    result["dataset"] = DatasetRead.model_validate(record.dataset)
+
+                logger.info(f"✅ 查询任务状态成功: uuid={uuid}, status={record.status}")
+                return TestRecordStatus(**result)
+
+            except Exception as e:
+                logger.error(f"❌ 获取任务状态失败: {e}")
+                raise
+
+    @staticmethod
+    def update_judge_model(input_uuid: str, judge_model_name: str):
+        with SessionLocal() as session:
+            TestRecordCRUD.update_by_uuid(session, input_uuid, judge_model=judge_model_name)
