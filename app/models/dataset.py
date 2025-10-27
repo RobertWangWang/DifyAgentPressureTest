@@ -12,11 +12,13 @@ class Dataset(Base):
     """
     __tablename__ = "datasets"
     __table_args__ = (
-        UniqueConstraint("file_md5", name="uq_datasets_file_md5"),
-        {"mysql_charset": "utf8mb4",
-        "mysql_collate": "utf8mb4_unicode_ci",
-        "comment": "上传数据集文件信息表"},
-
+        # ✅ 改为 (uploaded_by, file_md5, agent_id) 三元组唯一约束
+        UniqueConstraint("uploaded_by", "file_md5", "agent_id", name="uq_datasets_uploader_md5_agent"),
+        {
+            "mysql_charset": "utf8mb4",
+            "mysql_collate": "utf8mb4_unicode_ci",
+            "comment": "上传数据集文件信息表",
+        },
     )
 
     # ✅ UUID 主键
@@ -28,6 +30,9 @@ class Dataset(Base):
         nullable=False,
         comment="数据集唯一 UUID",
     )
+
+    # ✅ 新增字段
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, comment="所属的 dify agent ID")
 
     filename: Mapped[str] = mapped_column(String(255), nullable=False, comment="原始文件名")
     file_md5: Mapped[str] = mapped_column(String(64), nullable=False, comment="文件 MD5 值，用于去重")
@@ -46,13 +51,17 @@ class Dataset(Base):
 
     # ✅ 输出调试信息
     def __repr__(self) -> str:
-        return f"<Dataset(uuid={self.uuid}, filename='{self.filename}', md5='{self.file_md5}')>"
+        return (
+            f"<Dataset(uuid={self.uuid}, filename='{self.filename}', md5='{self.file_md5}', "
+            f"uploaded_by='{self.uploaded_by}', agent_id='{self.agent_id}')>"
+        )
 
     # ✅ to_dict 方法（与 TestRecord 风格一致）
     def to_dict(self, exclude_none: bool = False) -> dict:
         """将 ORM 对象转换为可序列化的字典"""
         data = {
             "uuid": self.uuid,
+            "agent_id": self.agent_id,
             "filename": self.filename,
             "file_md5": self.file_md5,
             "file_suffix": self.file_suffix,

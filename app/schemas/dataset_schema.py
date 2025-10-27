@@ -12,6 +12,7 @@ class DatasetBase(BaseModel):
     tos_url: str = Field(..., description="上传至 TOS 的完整下载 URL")
     preview_rows: Optional[List[Dict[str, Any]]] = Field(None, description="文件前 3 行内容 JSON")
     uploaded_by: Optional[str] = Field(None, description="上传者用户名")
+    agent_id: str = Field(..., description="所属的 dify agent ID")  # ✅ 新增字段，与唯一约束保持一致
 
 
 # ✅ 创建时使用（POST /datasets/upload）
@@ -23,6 +24,7 @@ class DatasetCreate(BaseModel):
     tos_url: str = Field(..., description="TOS 下载 URL")
     preview_rows: Optional[List[Dict[str, Any]]] = Field(None, description="文件前 3 行内容")
     uploaded_by: Optional[str] = Field(None, description="上传者用户名")
+    agent_id: str = Field(..., description="所属的 dify agent ID")  # ✅ 新增
 
 
 # ✅ 响应模型（用于返回）
@@ -35,6 +37,8 @@ class DatasetRead(BaseModel):
     tos_url: Optional[str] = None
     created_at: datetime
     preview_rows: Optional[List[Dict[str, Any]]] = None
+    uploaded_by: Optional[str] = None
+    agent_id: Optional[str] = None   # ✅ 新增
 
     model_config = ConfigDict(from_attributes=True)
 

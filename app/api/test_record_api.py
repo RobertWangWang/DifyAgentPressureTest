@@ -468,7 +468,6 @@ def detach_dataset(uuid_str: str, db: Session = Depends(get_db)):
     # 重新读取记录（dataset_uuid 已为空）
     db.refresh(record)
 
-    print(record)
     return {
         "message": "Dataset detached successfully",
     }
