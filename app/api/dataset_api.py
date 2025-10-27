@@ -189,14 +189,14 @@ def download_dataset(dataset_uuid: str, db: Session = Depends(get_db)):
         import tos
         import os
 
-        ak = os.getenv("TOS_ACCESS_KEY") or "AKLTNmIxZmJmN2E0ZTY0NDA3NTg0M2Y0MTdiOTllNWMxYTk"
-        sk = os.getenv("TOS_SECRET_KEY") or "TkRWaVkyRmlZbUZpWVRVMk5EbGpNbUV5T0dNNFpqQmlaVFEwTVRnNFpXUQ=="
-        endpoint = "tos-cn-beijing.volces.com"
-        region = "cn-beijing"
-        bucket_name = "dify-agent-pressure-test"
+        ak = os.getenv("TOS_ACCESS_KEY")
+        sk = os.getenv("TOS_SECRET_KEY")
+        endpoint = os.getenv("TOS_ENDPOINT")
+        region = os.getenv("TOS_REGION")
+        bucket_name = os.getenv("TOS_BUCKET")
 
         client = tos.TosClientV2(ak, sk, endpoint, region)
-        obj_stream = client.get_object(bucket_name, object_key)
+        obj_stream = client.get_object(bucket_name, object_key.__str__())
         buffer = BytesIO()
 
         for chunk in obj_stream:

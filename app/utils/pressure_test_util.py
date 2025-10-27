@@ -9,6 +9,7 @@ from transformers import AutoTokenizer
 from pathlib import Path
 from io import StringIO, BytesIO
 import tos
+import os
 
 from app.utils.logger import logger
 from app.utils.provider_models_util import (
@@ -498,11 +499,11 @@ def get_chatflow_parameter_template(api_url:str,api_key:str):
 
 def upload_to_tos(local_path: Path, object_key: str) -> str:
     """同步上传文件到火山引擎 TOS，返回文件公网 URL"""
-    ak = "AKLTNmIxZmJmN2E0ZTY0NDA3NTg0M2Y0MTdiOTllNWMxYTk"
-    sk = "TkRWaVkyRmlZbUZpWVRVMk5EbGpNbUV5T0dNNFpqQmlaVFEwTVRnNFpXUQ=="
-    endpoint = "tos-cn-beijing.volces.com"
-    region = "cn-beijing"
-    bucket_name = "dify-agent-pressure-test"
+    ak = os.getenv("TOS_ACCESS_KEY")
+    sk = os.getenv("TOS_SECRET_KEY")
+    endpoint = os.getenv("TOS_ENDPOINT")
+    region = os.getenv("TOS_REGION")
+    bucket_name = os.getenv("TOS_BUCKET")
 
     client = tos.TosClientV2(ak, sk, endpoint, region)
     if not local_path.exists():
@@ -526,11 +527,11 @@ def upload_to_tos(local_path: Path, object_key: str) -> str:
 
 def download_from_tos(object_key: str, local_path: str):
     """从火山 TOS 下载文件"""
-    ak = "AKLTNmIxZmJmN2E0ZTY0NDA3NTg0M2Y0MTdiOTllNWMxYTk"
-    sk = "TkRWaVkyRmlZbUZpWVRVMk5EbGpNbUV5T0dNNFpqQmlaVFEwTVRnNFpXUQ=="
-    endpoint = "tos-cn-beijing.volces.com"
-    region = "cn-beijing"
-    bucket_name = "dify-agent-pressure-test"
+    ak = os.getenv("TOS_ACCESS_KEY")
+    sk = os.getenv("TOS_SECRET_KEY")
+    endpoint = os.getenv("TOS_ENDPOINT")
+    region = os.getenv("TOS_REGION")
+    bucket_name = os.getenv("TOS_BUCKET")
 
     client = tos.TosClientV2(ak, sk, endpoint, region)
     try:

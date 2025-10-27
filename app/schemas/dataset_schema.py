@@ -34,6 +34,7 @@ class DatasetRead(BaseModel):
     tos_key: Optional[str] = None
     tos_url: Optional[str] = None
     created_at: datetime
+    preview_rows: Optional[List[Dict[str, Any]]] = None
 
     model_config = ConfigDict(from_attributes=True)
 
