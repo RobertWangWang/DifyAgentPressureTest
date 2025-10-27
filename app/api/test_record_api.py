@@ -442,3 +442,34 @@ def get_datasets_by_agent_and_bearer_paginated(
 
     return TestRecordCRUD.get_datasets_by_agent_and_bearer_token(agent_id, bearer_token, page, page_size)
 
+@router.delete("/{uuid_str}/dataset", status_code=status.HTTP_200_OK)
+def detach_dataset(uuid_str: str, db: Session = Depends(get_db)):
+    """
+    删除指定 TestRecord 的 dataset 引用（仅置空 dataset_uuid，不删除记录）
+    """
+    record = db.query(TestRecord).filter(
+        TestRecord.uuid == uuid_str,
+        TestRecord.is_deleted == False
+    ).first()
+
+    if not record:
+        raise HTTPException(status_code=404, detail="TestRecord not found")
+
+    # 如果本身就没有 dataset，则无需操作
+    if record.dataset_uuid is None:
+        return {"message": "Already detached", "record": record.to_dict(exclude_none=True)}
+
+    # 调用 CRUD 层函数进行解绑
+    success = TestRecordCRUD.detach_dataset(uuid_str)
+
+    if not success:
+        raise HTTPException(status_code=400, detail="Detach operation failed")
+
+    # 重新读取记录（dataset_uuid 已为空）
+    db.refresh(record)
+
+    print(record)
+    return {
+        "message": "Dataset detached successfully",
+    }
+

@@ -490,6 +490,7 @@ class TestRecordCRUD:
                     select(TestRecord).where(
                         TestRecord.dify_test_agent_id == agent_id,
                         TestRecord.is_deleted.is_(False),
+                        TestRecord.dataset_uuid.is_not(None)
                     )
                 )
                 if not record:
@@ -523,6 +524,7 @@ class TestRecordCRUD:
                         TestRecord.dify_account_id == dify_account_id,
                         TestRecord.dify_test_agent_id == agent_id,
                         TestRecord.is_deleted.is_(False),
+                        TestRecord.dataset_uuid.is_not(None)
                     )
                 )
                 total = session.scalar(total_stmt)
@@ -535,6 +537,7 @@ class TestRecordCRUD:
                         TestRecord.dify_account_id == dify_account_id,
                         TestRecord.dify_test_agent_id == agent_id,
                         TestRecord.is_deleted.is_(False),
+                        TestRecord.dataset_uuid.is_not(None)
                     )
                     .order_by(TestRecord.created_at.desc())
                     .offset((page - 1) * page_size)
@@ -569,3 +572,20 @@ class TestRecordCRUD:
             except Exception as e:
                 logger.error(f"❌ 查询失败: {e}")
                 raise
+
+    @staticmethod
+    def detach_dataset(uuid_str: str) -> bool:
+        """将 TestRecord 的 dataset 解绑（dataset_uuid 置空）"""
+        with SessionLocal() as db:
+            record = db.query(TestRecord).filter(
+                TestRecord.uuid == uuid_str,
+                TestRecord.is_deleted == False
+            ).first()
+
+            if not record:
+                return False
+
+            # 清空外键引用
+            record.dataset_uuid = None
+            db.commit()
+            return True
