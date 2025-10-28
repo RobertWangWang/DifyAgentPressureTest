@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, DateTime, Boolean, JSON, UniqueConstraint
+from sqlalchemy import String, DateTime, Boolean, JSON, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
@@ -13,7 +13,7 @@ class Dataset(Base):
     __tablename__ = "datasets"
     __table_args__ = (
         # ✅ 改为 (uploaded_by, file_md5, agent_id) 三元组唯一约束
-        UniqueConstraint("uploaded_by", "file_md5", "agent_id", name="uq_datasets_uploader_md5_agent"),
+        # UniqueConstraint("uploaded_by", "file_md5", "agent_id", name="uq_datasets_uploader_md5_agent"),
         {
             "mysql_charset": "utf8mb4",
             "mysql_collate": "utf8mb4_unicode_ci",
@@ -45,8 +45,13 @@ class Dataset(Base):
     uploaded_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, comment="上传者用户名")
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.utcnow, nullable=False, comment="上传时间"
+        DateTime(timezone=True),
+        server_default=func.convert_tz(func.now(), "+00:00", "+08:00"),
+        nullable=False,
+        comment="创建时间（北京时间）",
+        default=datetime.now(),
     )
+
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否逻辑删除")
 
     # ✅ 输出调试信息

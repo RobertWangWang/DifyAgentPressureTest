@@ -120,7 +120,7 @@ async def run_chatflow_tests_async(
                     "input_generated_answer": result["generated_answer"],
                 }
                 await asyncio.to_thread(SingleRunResultCRUD.create, **single_run_data)
-                logger.success(f"✅ [Row {index + 1}] 测试完成")
+                logger.success(f"✅ [Row {index + 1}] 测试完成,input_query:{input_query}, data:{single_run_data}")
                 return result
 
             except asyncio.CancelledError:

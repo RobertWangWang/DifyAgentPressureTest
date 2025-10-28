@@ -53,9 +53,10 @@ class TestRecord(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.now(),
+        server_default=func.convert_tz(func.now(), "+00:00", "+08:00"),
         nullable=False,
-        comment="创建时间",
+        comment="创建时间（北京时间）",
+        default=datetime.now(),
     )
 
     is_deleted: Mapped[bool] = mapped_column(

@@ -156,12 +156,13 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=e.errors())
 
-    file_md5 = json_data.get("dataset_file_md5")
-    if not file_md5:
+    file_uuid = json_data.get("dataset_file_uuid")
+    if not file_uuid:
         raise HTTPException(status_code=400, detail="必须提供 dataset_file_md5")
 
     # ✅ 1. 查找数据集
-    dataset_info = DatasetCRUD.get_by_md5(db, file_md5)
+    dataset_info = DatasetCRUD.get_by_uuid(db, file_uuid)
+    logger.debug(dataset_info)
     if not dataset_info:
         raise HTTPException(status_code=404, detail="未找到对应数据集，请先上传")
 
@@ -243,7 +244,7 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
         content={
             "message": "✅ 评测任务创建成功",
             "record_uuid": created.uuid,
-            "dataset_file_md5": file_md5,
+            "dataset_file_md5": file_uuid,
             "dataset_tos_url": dataset_info.tos_url,
         }
     )

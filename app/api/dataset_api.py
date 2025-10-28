@@ -61,14 +61,14 @@ async def upload_dataset(request: Request, db: Session = Depends(get_db)):
     logger.info(f"📦 上传文件 {upload.filename} 的 MD5: {file_md5}")
 
     # ✅ 去重逻辑：检查是否已有相同文件
-    existing = DatasetCRUD.get_by_md5(db, file_md5, agent_id=agent_id, uploaded_by=dify_account_id)
-    logger.debug(f"✅ 检查数据集: {existing}")
-    if existing:
-        DatasetCRUD.update_by_uuid(db, existing.uuid, **{"is_deleted":False})
-        logger.info(f"✅ 文件已存在，复用数据集: {existing.tos_url}")
-        return existing
-    elif not existing:
-        pass
+    # existing = DatasetCRUD.get_by_md5(db, file_md5, agent_id=agent_id, uploaded_by=dify_account_id)
+    # logger.debug(f"✅ 检查数据集: {existing}")
+    # if existing:
+    #     DatasetCRUD.update_by_uuid(db, existing.uuid, **{"is_deleted":False})
+    #     logger.info(f"✅ 文件已存在，复用数据集: {existing.tos_url}")
+    #     return existing
+    # elif not existing:
+    #     pass
 
     # ✅ 写入临时文件
     upload_dir = Path(settings.FILE_UPLOAD_DIR)
@@ -91,6 +91,7 @@ async def upload_dataset(request: Request, db: Session = Depends(get_db)):
     # ✅ 预览前3行
     preview_rows = []
     try:
+        df = None
         if suffix == ".csv":
             df = pd.read_csv(BytesIO(file_bytes))
         elif suffix in [".xls", ".xlsx"]:
@@ -130,6 +131,7 @@ def list_datasets(
     limit: int = Query(50, ge=1, le=500, description="每页数量"),
     db: Session = Depends(get_db),
 ):
+    logger.debug(f"分页查询数据集: uploaded_by={uploaded_by}, agent_id={agent_id}, dify_api_url={dify_api_url}")
     account_profile_url = dify_api_url_2_account_profile_url(dify_api_url)
     dify_account_id = dify_get_account_id(account_profile_url,uploaded_by)
     """分页列出上传的数据集"""

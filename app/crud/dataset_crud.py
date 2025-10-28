@@ -20,10 +20,9 @@ class DatasetCRUD:
                 Dataset.agent_id == data.agent_id,
                 Dataset.is_deleted == False,
             )
-            existing = session.execute(stmt).scalar_one_or_none()
-            if existing:
-                print("*"*55)
-                return existing
+            # existing = session.execute(stmt).scalar_one_or_none()
+            # if existing:
+                ## return existing
 
             dataset = Dataset(
                 filename=data.filename,
@@ -63,7 +62,7 @@ class DatasetCRUD:
             stmt = stmt.where(Dataset.agent_id == agent_id)
         if uploaded_by:
             stmt = stmt.where(Dataset.uploaded_by == uploaded_by)
-        return session.execute(stmt).scalar_one_or_none()
+        return session.execute(stmt).scalars().first()
 
     # 🟢 列表查询（分页）
     @staticmethod

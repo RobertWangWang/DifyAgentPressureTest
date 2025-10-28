@@ -10,6 +10,7 @@ from pathlib import Path
 from io import StringIO, BytesIO
 import tos
 import os
+from fastapi import HTTPException
 
 from app.utils.logger import logger
 from app.utils.provider_models_util import (
@@ -334,9 +335,15 @@ def dify_get_account_id(input_account_profile_url:str,
     response = requests.get(input_account_profile_url, headers=headers)
     logger.info(f"dify account profile response: {response.text}")
     resp_json = json.loads(response.text)
-    account_id = resp_json['id']
-    logger.info(f"dify account id: {account_id}")
-    return account_id
+    logger.warning(f"dify account profile response json: {resp_json}")
+    try:
+        account_id = resp_json['id']
+        logger.info(f"dify account id: {account_id}")
+        return account_id
+    except Exception as e:
+        logger.error(f"dify account profile response json error: {e}")
+        logger.error(f"dify account profile response json: {resp_json}")
+        raise HTTPException(status_code=500, detail=f"dify account profile response json error: {resp_json}")
 
 def dify_get_agent_type_and_agent_name(
         input_agent_manipulate_url:str,
@@ -355,18 +362,22 @@ def dify_get_agent_type_and_agent_name(
 
     response = requests.get(input_agent_manipulate_url, headers=headers)
     resp_json = response.json()
-    logger.info(f"dify agent response: {resp_json}")
-    logger.info(f"dify agent response type: {resp_json['mode']}")
-    logger.info(f"dify agent response name: {resp_json['name']}")
-    result_dict = {}
-    if resp_json['mode'] == "workflow":
-        result_dict['agent_type'] = AgentType.WORKFLOW
-    elif resp_json['mode'] == "advanced-chat":
-        result_dict['agent_type'] = AgentType.CHATFLOW
-    result_dict['agent_name'] = resp_json['name']
+    try:
+        logger.info(f"dify agent response: {resp_json}")
+        logger.info(f"dify agent response type: {resp_json['mode']}")
+        logger.info(f"dify agent response name: {resp_json['name']}")
+        result_dict = {}
+        if resp_json['mode'] == "workflow":
+            result_dict['agent_type'] = AgentType.WORKFLOW
+        elif resp_json['mode'] == "advanced-chat":
+            result_dict['agent_type'] = AgentType.CHATFLOW
+        result_dict['agent_name'] = resp_json['name']
 
-    return result_dict
-
+        return result_dict
+    except Exception as e:
+        logger.error(f"dify agent response json error: {e}")
+        logger.error(f"dify agent response json: {resp_json}")
+        raise HTTPException(status_code=500, detail=f"dify agent response json error: {resp_json}")
 
 
 def get_dify_agent_api_key(input_agent_api_key_url:str,
@@ -471,7 +482,11 @@ def get_agent_input_para_dict(input_dify_url:str,input_dify_api_key:str)->pd.Dat
 def get_workflow_parameter_template(api_url:str,api_key:str):
 
     result = get_agent_input_para_dict(api_url, api_key)
-    variables = result["variable"].tolist()
+    if "variable" in result.columns:
+        variables = result["variable"].tolist()
+    else:
+        variables = []
+    variables.append("ref_answer")
     data_sheet_df = pd.DataFrame(columns=variables)
     excel_buffer = BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
@@ -485,8 +500,12 @@ def get_workflow_parameter_template(api_url:str,api_key:str):
 def get_chatflow_parameter_template(api_url:str,api_key:str):
 
     result = get_agent_input_para_dict(api_url,api_key)
-    variables = result["variable"].tolist()
+    if "variable" in result.columns:
+        variables = result["variable"].tolist()
+    else:
+        variables = []
     variables.append("query")
+    variables.append("ref_answer")
     data_sheet_df = pd.DataFrame(columns=variables)
     excel_buffer = BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:

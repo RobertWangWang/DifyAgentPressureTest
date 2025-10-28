@@ -122,10 +122,13 @@ class TestRecordRead(BaseModel):
     judge_model_provider_name: Optional[str] = None
     dataset_file_md5: Optional[str] = None
     dataset_tos_url: Optional[str] = None
+    judge_prompt: Optional[str] = None
+    success_count: Optional[int] = None
+    failure_count: Optional[int] = None
 
     # ✅ 嵌套对象
     dataset: Optional[DatasetRead] = None
-
+    result: Optional[Dict[str, Any]] = None
     model_config = ConfigDict(from_attributes=True)
 
 
