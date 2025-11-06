@@ -1,6 +1,6 @@
 from typing import Any, Optional, Dict, List
 from sqlalchemy.orm import Session
-from sqlalchemy import select, update, delete, func
+from sqlalchemy import select, update, delete, func, or_
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.models.dataset import Dataset
@@ -73,7 +73,7 @@ class DatasetCRUD:
         limit: int = 100,
         offset: int = 0,
     ) -> List[Dataset]:
-        stmt = select(Dataset).where(Dataset.is_deleted == False)
+        stmt = select(Dataset).where(or_(Dataset.is_deleted == False, Dataset.is_deleted == 0, Dataset.is_deleted == None))
         if uploaded_by:
             stmt = stmt.where(Dataset.uploaded_by == uploaded_by)
         if agent_id:

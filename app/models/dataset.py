@@ -1,16 +1,16 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+beijing_tz = timezone(timedelta(hours=8))
 from typing import Optional
 from sqlalchemy import String, DateTime, Boolean, JSON, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
-
 class Dataset(Base):
     """
     数据集表：用于存储上传的文件信息（与 TestRecord 拆分）
     """
-    __tablename__ = "datasets"
+    __tablename__ = "bots_eval_datasets"
     __table_args__ = (
         # ✅ 改为 (uploaded_by, file_md5, agent_id) 三元组唯一约束
         # UniqueConstraint("uploaded_by", "file_md5", "agent_id", name="uq_datasets_uploader_md5_agent"),
@@ -46,10 +46,9 @@ class Dataset(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.convert_tz(func.now(), "+00:00", "+08:00"),
         nullable=False,
         comment="创建时间（北京时间）",
-        default=datetime.now(),
+        default=lambda: datetime.now(beijing_tz),
     )
 
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, comment="是否逻辑删除")

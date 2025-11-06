@@ -7,8 +7,7 @@ import pandas as pd
 import os
 
 from app.models import TestRecord, TestStatus
-from app.models.dataset import Dataset
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal,AsyncSessionLocal
 from app.schemas.dataset_schema import DatasetRead
 from app.schemas.test_record_schema import TestRecordRead, TestRecordStatus
 from app.utils.pressure_test_util import (
@@ -16,7 +15,7 @@ from app.utils.pressure_test_util import (
     dify_api_url_2_account_profile_url,
     download_from_tos
 )
-from loguru import logger
+from app.utils.logger import logger
 
 
 class TestRecordCRUD:
@@ -276,33 +275,45 @@ class TestRecordCRUD:
     @staticmethod
     def get_records_by_keyword(key_word: str, page: int, page_size: int):
         with SessionLocal() as session:
-            stmt = (
-                select(TestRecord)
-                .options(joinedload(TestRecord.dataset))
-                .where(TestRecord.is_deleted.is_(False))
-            )
+            # 通用过滤条件（排除删除、排除实验状态）
+            base_conditions = [
+                TestRecord.is_deleted.is_(False),
+                TestRecord.status != TestStatus.EXPERIMENT
+            ]
 
             if key_word:
+                # 模糊匹配查询
                 like_pattern = f"%{key_word}%"
-                stmt = stmt.where(
-                    or_(
-                        TestRecord.task_name.ilike(like_pattern),
-                        TestRecord.agent_name.ilike(like_pattern),
+                stmt = (
+                    select(TestRecord)
+                    .options(joinedload(TestRecord.dataset))
+                    .where(
+                        *base_conditions,
+                        or_(
+                            TestRecord.task_name.ilike(like_pattern),
+                            TestRecord.agent_name.ilike(like_pattern),
+                        )
                     )
+                    .order_by(TestRecord.created_at.desc())
                 )
-
-            stmt = stmt.order_by(TestRecord.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
-            records = session.scalars(stmt).all()
-
-            count_stmt = select(func.count()).select_from(TestRecord).where(TestRecord.is_deleted.is_(False))
-            if key_word:
-                count_stmt = count_stmt.where(
-                    or_(
-                        TestRecord.task_name.ilike(like_pattern),
-                        TestRecord.agent_name.ilike(like_pattern),
-                    )
+                # 搜索模式下不分页，直接返回匹配记录
+                records = session.scalars(stmt).all()
+                total = len(records)  # 当前记录数
+            else:
+                # 无关键词时分页获取所有记录
+                stmt = (
+                    select(TestRecord)
+                    .options(joinedload(TestRecord.dataset))
+                    .where(*base_conditions)
+                    .order_by(TestRecord.created_at.desc())
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
                 )
-            total = session.scalar(count_stmt)
+                records = session.scalars(stmt).all()
+
+                # 仅当keyword为空时计算总数
+                count_stmt = select(func.count()).select_from(TestRecord).where(*base_conditions)
+                total = session.scalar(count_stmt)
 
             return {
                 "page": page,
@@ -312,50 +323,50 @@ class TestRecordCRUD:
             }
 
     @staticmethod
-    def increment_success_count(uuid_str: str) -> bool:
+    async def increment_success_count(uuid_str: str) -> bool:
         """
-        ✅ 成功次数 +1
+        ✅ 异步版本：成功次数 +1
         """
-        with SessionLocal() as session:
+        async with AsyncSessionLocal() as session:
             try:
-                session.execute(
+                await session.execute(
                     text("""
-                         UPDATE test_records
+                         UPDATE bots_eval_test_records
                          SET success_count = success_count + 1
                          WHERE uuid = :uuid_str
                            AND is_deleted = 0
                          """),
                     {"uuid_str": uuid_str},
                 )
-                session.commit()
+                await session.commit()
                 logger.debug(f"✅ 成功次数 +1，uuid={uuid_str}")
                 return True
             except SQLAlchemyError as e:
-                session.rollback()
+                await session.rollback()
                 logger.error(f"❌ 成功次数更新失败: {e}")
                 return False
 
     @staticmethod
-    def increment_failure_count(uuid_str: str) -> bool:
+    async def increment_failure_count(uuid_str: str) -> bool:
         """
-        ❌ 失败次数 +1
+        ❌ 异步版本：失败次数 +1
         """
-        with SessionLocal() as session:
+        async with AsyncSessionLocal() as session:
             try:
-                session.execute(
+                await session.execute(
                     text("""
-                         UPDATE test_records
+                         UPDATE bots_eval_test_records
                          SET failure_count = failure_count + 1
                          WHERE uuid = :uuid_str
                            AND is_deleted = 0
                          """),
                     {"uuid_str": uuid_str},
                 )
-                session.commit()
+                await session.commit()
                 logger.debug(f"⚠️ 失败次数 +1，uuid={uuid_str}")
                 return True
             except SQLAlchemyError as e:
-                session.rollback()
+                await session.rollback()
                 logger.error(f"❌ 失败次数更新失败: {e}")
                 return False
 
@@ -390,6 +401,7 @@ class TestRecordCRUD:
                 select(TestRecord)
                 .where(
                     TestRecord.dify_account_id == dify_account_id,
+                    TestRecord.status != TestStatus.EXPERIMENT,
                     TestRecord.is_deleted.is_(False)
                 )
                 .order_by(TestRecord.created_at.desc())

@@ -1,8 +1,9 @@
-from sqlalchemy import select, update, delete, desc, func
-from loguru import logger
+from sqlalchemy import select, update, delete, asc, func, desc
 from typing import List, Optional, Dict, Any
+
+from app.utils.logger import logger
 from app.models.single_run_result import SingleRunResult
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal,AsyncSessionLocal
 
 
 class SingleRunResultCRUD:
@@ -11,24 +12,28 @@ class SingleRunResultCRUD:
     自动管理数据库 Session，所有操作均为静态方法。
     """
 
+
     # === CREATE ===
     @staticmethod
-    def create(**kwargs) -> SingleRunResult:
+    async def create(**kwargs) -> SingleRunResult:
         """
-        创建一条 SingleRunResult 记录。
+        异步创建一条 SingleRunResult 记录。
         支持动态传入字段：input_task_uuid, chatflow_query, test_params, ...
         """
-        try:
-            with SessionLocal() as session:
+        async with AsyncSessionLocal() as session:
+            try:
                 record = SingleRunResult(**kwargs)
                 session.add(record)
-                session.commit()
-                session.refresh(record)
-                logger.info(f"✅ Created SingleRunResult(record_id={record.record_id}, task_uuid={record.input_task_uuid})")
+                await session.commit()
+                await session.refresh(record)
+                logger.info(
+                    f"✅ Created SingleRunResult(record_id={record.record_id}, task_uuid={record.input_task_uuid})"
+                )
                 return record
-        except Exception as e:
-            logger.exception(f"❌ Failed to create SingleRunResult: {e}")
-            raise
+            except Exception as e:
+                await session.rollback()
+                logger.exception(f"❌ Failed to create SingleRunResult: {e}")
+                raise
 
     # === READ ===
     @staticmethod
@@ -148,14 +153,14 @@ class SingleRunResultCRUD:
     # === LATEST 3 ===
     @staticmethod
     def get_latest_three_by_task_id(task_id: str) -> List[SingleRunResult]:
-        """根据 task_id 查询最新的 3 条记录（按 create_time 倒序）"""
+        """根据 task_id 查询最新的 3 条记录（按 create_time 升序）"""
         try:
             with SessionLocal() as session:
                 stmt = (
                     select(SingleRunResult)
                     .where(SingleRunResult.input_task_uuid == task_id)
                     .where(SingleRunResult.is_deleted == False)
-                    .order_by(desc(SingleRunResult.create_time))
+                    .order_by(asc(SingleRunResult.create_time))
                     .limit(3)
                 )
                 results = list(session.scalars(stmt))

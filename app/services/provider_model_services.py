@@ -21,7 +21,7 @@ def llm_connection_test(candidate_models: List[ProviderModel]):
         if "aliyun" in candidate_model_provider_name or "bailian" in candidate_model_provider_name:
             result = call_aliyun_dashscope(candidate_model_config)
             llm_func = send_message_aliyun_dashscope
-        elif "openai" in candidate_model_provider_name:
+        elif "open_ai" in candidate_model_provider_name:
             result = call_openai_compatible(candidate_model_config)
             llm_func = send_message_openai_compatible
         elif ("volcengine" in candidate_model_provider_name or
@@ -36,4 +36,4 @@ def llm_connection_test(candidate_models: List[ProviderModel]):
             logger.info(
                 f"Provider={candidate_model_provider_name} | Model={candidate_model_name} | status={result.get('status')} | text={result.get('text')}")
             return {"llm_record":candidate_model.to_dict(),"llm_func":llm_func.__name__ }
-    return ""
+    raise Exception("未找到可用的 LLM 模型")

@@ -2,9 +2,17 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, ConfigDict
+from enum import Enum
 
 from app.schemas.dataset_schema import DatasetRead  # ✅ 新增导入
 
+
+class AgentType(str, Enum):
+    CHATFLOW = "chatflow"
+    WORKFLOW = "workflow"
+    CHAT = "chat"
+    AGENT_CHAT = "agent-chat"
+    COMPLETION = "completion"
 
 class TestStatus(str, PyEnum):
     INIT = "init"
@@ -90,13 +98,11 @@ class TestRecordCreate(BaseModel):
     judge_model: str
     judge_model_provider_name: str
 
-    dify_api_url: str
     dify_test_agent_id: str
     dify_bearer_token: str
     dify_username: str
     dify_api_key: Optional[str] = None   # ✅ 新增字段
 
-    concurrency: int = 1
     dataset_uuid: Optional[str] = None
     dataset_file_md5: Optional[str] = None
 
@@ -201,5 +207,4 @@ class TestRecordStatus(BaseModel):
 class AgentParameterRequest(BaseModel):
     """代理参数请求参数"""
     agent_id: str
-    dify_api_url: str
     bearer_token: str

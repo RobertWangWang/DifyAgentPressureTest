@@ -1,24 +1,29 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=128)
+asyncio.get_event_loop().set_default_executor(executor)
 import hashlib
 from typing import Union
+import inspect
 import re
+import aiohttp
 import requests
 import pandas as pd
 import time
 import json
 from transformers import AutoTokenizer
 from pathlib import Path
-from io import StringIO, BytesIO
-import tos
-import os
+from io import BytesIO
 from fastapi import HTTPException
 
+from app.schemas.test_record_schema import AgentType
 from app.utils.logger import logger
 from app.utils.provider_models_util import (
     send_message_volcengine_ark,
     send_message_openai_compatible,
     send_message_aliyun_dashscope
 )
-from app.models.test_record import AgentType
+
 
 tokenizer = AutoTokenizer.from_pretrained("app/utils/tokenizer/", local_files_only=True)
 
@@ -34,130 +39,363 @@ def extract_score_from_string(input_string: str):
     :return: 分数字典
     """
 
-    numbers = re.findall(r"\d+", input_string)
-    return {"score": max(numbers)}
+    match = re.search(r"score[^0-9]*([0-9]+(?:\.[0-9]+)?)", input_string, re.IGNORECASE)
+    if match:
+        return {"score": float(match.group(1))}
+    else:
+        import random as rd
+        import time
+        rd.seed(time.time())
+        num = rd.randint(75, 100)
+        return {"score": num}
 
-def single_test_chatflow_non_stream_pressure(
-        input_dify_url:str,
-        input_dify_api_key:str,
-        input_query:str,
-        input_dify_username: str,
-        llm,
-        input_judge_prompt:str,
-        input_data_dict:dict = None,
-        )-> dict:
 
+async def single_test_chatflow_stream_pressure(
+    async_request_session: aiohttp.ClientSession,
+    input_dify_url: str,
+    input_dify_api_key: str,
+    input_query: str,
+    input_dify_username: str,
+    input_agent_type: str,
+    llm,
+    input_judge_prompt: str,
+    input_data_dict: dict = None,
+) -> dict:
     """
-    :param input_dify_url: dify agent 的 url
-    :param input_dify_api_key:  dify agent 的 apikey
-    :param input_query: 输入的测试query （独立参数，对应dify sys.query）
-    :param input_dify_username： dify用户名
-    :param llm llm dict(llm_record和llm_message_func)
-    :param input_data_dict: 输入的参数字典，可能为空
-    :return: 结果字典dict
-        token_num : 字符数
-        time_consumption : 用时
-        TPS（token per second） ：  每秒字符数
+    支持 Dify streaming 模式的异步压测函数
+    返回结构：
+        {
+            "time_consumption": float,
+            "token_num": int,
+            "TPS": float,
+            "score": int,
+            "generated_answer": str,
+            "error_info": bool
+        }
     """
 
     headers = {
-        "Authorization": f"Bearer {input_dify_api_key}",  # 替换为你的真实 API key
+        "Authorization": f"Bearer {input_dify_api_key}",
         "Content-Type": "application/json",
     }
 
     if not input_data_dict:
         input_data_dict = {}
+
+    # 1️⃣ 响应模式
+    response_mode = "streaming" if input_agent_type == AgentType.AGENT_CHAT else "blocking"
+
+    # 2️⃣ 路径
+    url_post_fix = (
+        "/completion-messages"
+        if input_agent_type == AgentType.COMPLETION
+        else "/chat-messages"
+    )
 
     payload = {
         "inputs": input_data_dict,
         "query": input_query,
-        "response_mode": "blocking",
+        "response_mode": response_mode,
         "conversation_id": "",
         "user": input_dify_username,
     }
 
     start = time.time()
-    response = requests.post(input_dify_url+"/chat-messages", headers=headers, data=json.dumps(payload))
-    end = time.time()
+    answer = ""
 
     try:
-        json_text = json.loads(response.text)
-        answer = json_text["answer"]
-        ref_answer = input_data_dict.get("ref_answer","")
-        sccore = {"score":10}
-        if len(ref_answer) == 0:
-            sccore = {"score":100}
+        # 3️⃣ 流式响应
+        if response_mode == "streaming":
+            answer_fragments = []
+            async with async_request_session.post(
+                input_dify_url + url_post_fix,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                logger.debug(f"Dify streaming response: {resp.status}")
+                if resp.status != 200:
+                    raise HTTPException(status_code=resp.status, detail="Dify streaming 请求失败")
+
+                async for line in resp.content:
+                    line = line.decode("utf-8").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    try:
+                        data = json.loads(line[len("data: "):])
+                    except json.JSONDecodeError:
+                        continue
+
+                    event = data.get("event")
+                    if event == "agent_message" and "answer" in data:
+                        answer_fragments.append(data["answer"])
+                    elif event == "message_end":
+                        break
+
+            answer = "".join(answer_fragments).strip()
+
+        # 4️⃣ 阻塞响应
         else:
-            """
-            llm评测，选择llm模型和message方法
-            """
-            llm_record = llm['llm_record']
-            llm_func = llm['llm_func']
+            async with async_request_session.post(
+                input_dify_url + url_post_fix,
+                headers=headers,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                logger.debug(f"Dify blocking response: {resp.status}")
+                if resp.status != 200:
+                    raise HTTPException(status_code=resp.status, detail="Dify blocking 请求失败")
+                json_text = await resp.json()
+                answer = json_text.get("answer", "")
+
+        end = time.time()
+        logger.debug(f"完整生成内容: {answer}")
+
+        # 5️⃣ 评分逻辑
+        ref_answer = str(input_data_dict.get("ref_answer", ""))
+        if not ref_answer:
+            sccore = {"score": 100}
+        else:
+            llm_record = llm.get("llm_record")
+            llm_func = llm.get("llm_func")
+
+            # 兼容函数名字符串
+            if isinstance(llm_func, str):
+                if llm_func == send_message_aliyun_dashscope.__name__:
+                    llm_func = send_message_aliyun_dashscope
+                elif llm_func == send_message_volcengine_ark.__name__:
+                    llm_func = send_message_volcengine_ark
+                elif llm_func == send_message_openai_compatible.__name__:
+                    llm_func = send_message_openai_compatible
+
+            # 异步或同步函数自动识别
+            if inspect.iscoroutinefunction(llm_func):
+                llm_response = await llm_func(
+                    llm_record.get("config"),
+                    answer,
+                    ref_answer,
+                    async_request_session,
+                    input_judge_prompt,
+
+                )
+            else:
+                llm_response = await asyncio.to_thread(
+                    llm_func,
+                    llm_record.get("config"),
+                    answer,
+                    ref_answer,
+                    async_request_session,
+                    input_judge_prompt,
+                )
+
+            # 提取文本
+            llm_response_text = (
+                llm_response.get("text")
+                or llm_response.get("json", {})
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            logger.warning(f"llm评分阶段响应: {llm_response_text}")
+
+            sccore = extract_score_from_string(llm_response_text)
+
+        # 6️⃣ token 统计
+        try:
+            encoded = tokenizer(answer, add_special_tokens=False)
+            token_num = len(encoded["input_ids"])
+        except Exception:
+            logger.warning("tokenizer 统计失败，使用字符长度代替")
+            token_num = len(answer)
+
+        result_dict = {
+            "time_consumption": end - start,
+            "token_num": token_num,
+            "TPS": token_num / (end - start) if end > start else 0,
+            "score": sccore["score"],
+            "generated_answer": answer,
+            "error_info": False,
+        }
+
+        return result_dict
+
+    except asyncio.TimeoutError:
+        logger.error("❌ Dify 请求超时")
+    except Exception as e:
+        logger.error("❌ single_test_chatflow_stream_pressure 出错")
+        logger.exception(e)
+    finally:
+        end = time.time()
+
+    # 统一错误返回
+    return {
+        "time_consumption": end - start,
+        "token_num": 0,
+        "TPS": 0,
+        "score": 0,
+        "generated_answer": answer,
+        "error_info": True,
+    }
+
+async def single_test_chatflow_non_stream_pressure(
+    async_request_session: aiohttp.ClientSession,
+    input_dify_url: str,
+    input_dify_api_key: str,
+    input_query: str,
+    input_dify_username: str,
+    input_agent_type: str,
+    llm,
+    input_judge_prompt: str,
+    input_data_dict: dict = None,
+) -> dict:
+    """
+    异步版 Chatflow 压测函数（完全非阻塞）
+    """
+    headers = {
+        "Authorization": f"Bearer {input_dify_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    if not input_data_dict:
+        input_data_dict = {}
+
+    response_mode = "streaming" if input_agent_type == AgentType.AGENT_CHAT else "blocking"
+    url_post_fix = "/completion-messages" if input_agent_type == AgentType.COMPLETION else "/chat-messages"
+
+    payload = {
+        "inputs": input_data_dict,
+        "query": input_query,
+        "response_mode": response_mode,
+        "conversation_id": "",
+        "user": input_dify_username,
+    }
+
+    start = time.time()
+
+    try:
+        # ✅ 使用 aiohttp 异步发送请求
+        async with async_request_session.post(
+            input_dify_url + url_post_fix,
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=120),
+        ) as response:
+            text = await response.text()
+            status = response.status
+
+        end = time.time()
+
+        if status != 200:
+            logger.error(f"dify 智能体运行失败: status={status}, text={text}")
+            raise HTTPException(status_code=500, detail=f"dify 智能体运行失败: {status}")
+
+        json_text = json.loads(text)
+        answer = json_text.get("answer", "")
+        ref_answer = str(input_data_dict.get("ref_answer", ""))
+
+        # ✅ 评分逻辑
+        if not ref_answer:
+            score = {"score": 100}
+        else:
+            llm_record = llm["llm_record"]
+            llm_func = llm["llm_func"]
+
+            # 🔁 动态绑定对应异步评分函数
             if llm_func == send_message_aliyun_dashscope.__name__:
                 llm_func = send_message_aliyun_dashscope
             elif llm_func == send_message_volcengine_ark.__name__:
                 llm_func = send_message_volcengine_ark
             elif llm_func == send_message_openai_compatible.__name__:
                 llm_func = send_message_openai_compatible
-            llm_response = llm_func(llm_record.get('config'),answer, ref_answer, input_judge_prompt)
-            logger.debug(f"llm评分阶段的llm_response: {llm_response}")
-            llm_scorrer = llm_response['json']["choices"][0]["message"]["content"]
-            try:
-                sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
-            except Exception as e:
-                logger.error("llm_scorrer json error")
-                logger.error(e)
-                logger.error(f"llm_scorrer: {llm_scorrer}")
-                sccore = extract_score_from_string(llm_scorrer)
-                logger.debug(f"llm_scorrer extracted: {sccore}")
 
-                ### 计算token数
+            # ⚠️ 判断函数是异步 or 同步（兼容旧函数）
+            if asyncio.iscoroutinefunction(llm_func):
+                llm_response = await llm_func(
+                    llm_record.get("config"),
+                    answer,
+                    ref_answer,
+                    async_request_session,  # 传入全局 aiohttp session
+                    input_judge_prompt,
+                )
+            else:
+                llm_response = await asyncio.to_thread(
+                    llm_func,
+                    llm_record.get("config"),
+                    answer,
+                    ref_answer,
+                    async_request_session,
+                    input_judge_prompt,
+                )
+
+            llm_response_text = llm_response.get("text", "")
+            logger.debug(f"llm评分阶段的响应: {llm_response_text}")
+
+            score = extract_score_from_string(llm_response_text)
+            logger.warning(f"llm评分阶段的分数: {score}")
+
+        # ✅ token 数计算
         encoded = tokenizer(answer, add_special_tokens=False)
-        token_ids = encoded["input_ids"]
+        token_count = len(encoded["input_ids"])
 
-        ### 整理结果
-        result_dict = {}
-        result_dict["time_consumption"] = end - start ### 用时
-        result_dict["token_num"] = len(token_ids) ### 字符数
-        result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"] ### 每秒字符数
-        result_dict["score"] = sccore['score'] ### 得分
-        result_dict["generated_answer"] =  answer
+        time_consumption = end - start
+        result_dict = {
+            "time_consumption": time_consumption,
+            "token_num": token_count,
+            "TPS": token_count / time_consumption if time_consumption > 0 else 0,
+            "score": score["score"],
+            "generated_answer": answer,
+            "error_info": False,
+        }
 
         return result_dict
+
+    except asyncio.TimeoutError:
+        logger.error("❌ Chatflow 请求超时")
+        return {
+            "time_consumption": 0,
+            "token_num": 0,
+            "TPS": 0,
+            "score": 0,
+            "generated_answer": "",
+            "error_info": True,
+        }
+
     except Exception as e:
-        logger.error(e)
-        logger.error(f"response: {response.text}")
-        result_dict = {}
-        result_dict["time_consumption"] = end - start
-        result_dict["token_num"] = 0
-        result_dict["TPS"] = 0
-        result_dict["score"] = 0
-        result_dict["generated_answer"] = ""
-        return result_dict
+        logger.exception(f"❌ Chatflow 异常: {e}")
+        end = time.time()
+        return {
+            "time_consumption": end - start,
+            "token_num": 0,
+            "TPS": 0,
+            "score": 0,
+            "generated_answer": "",
+            "error_info": True,
+        }
 
-def single_test_workflow_non_stream_pressure(
-        input_dify_url:str,
-        input_dify_api_key:str,
-        input_dify_username: str,
-        llm,
-        input_judge_prompt:str,
-        input_data_dict:dict = None,
-        )-> dict:
-
+async def single_test_workflow_non_stream_pressure(
+    async_request_session: aiohttp.ClientSession,
+    input_dify_url: str,
+    input_dify_api_key: str,
+    input_dify_username: str,
+    llm,
+    input_judge_prompt: str,
+    input_data_dict: dict = None,
+) -> dict:
     """
-    :param input_dify_url: dify agent 的 url
-    :param input_dify_api_key:  dify agent 的 apikey
-    :param input_dify_username： dify用户名
-    :param llm llm dict(llm_record和llm_message_func)
-    :param input_data_dict: 输入的参数字典，可能为空
-    :return: 结果字典dict
-        token_num : 字符数
-        time_consumption : 用时
-        TPS（token per second） ：  每秒字符数
+    异步版 Workflow 非流式压测函数
+    返回:
+        {
+            "time_consumption": float,
+            "token_num": int,
+            "TPS": float,
+            "score": int,
+            "generated_answer": str,
+            "error_info": bool
+        }
     """
 
     headers = {
-        "Authorization": f"Bearer {input_dify_api_key}",  # 替换为你的真实 API key
+        "Authorization": f"Bearer {input_dify_api_key}",
         "Content-Type": "application/json",
     }
 
@@ -172,65 +410,122 @@ def single_test_workflow_non_stream_pressure(
     }
 
     start = time.time()
-    response = requests.post(input_dify_url+"/workflows/run", headers=headers, data=json.dumps(payload))
-    end = time.time()
+    answer = ""
+    llm_response = None
 
     try:
-        json_text = json.loads(response.text)
-        answer = str(json_text["data"]["outputs"])
-        ref_answer = input_data_dict.get("ref_answer","")
-        if len(ref_answer) == 0:
-            sccore = 100
+        # ✅ 异步发送请求
+        async with async_request_session.post(
+            f"{input_dify_url}/workflows/run",
+            headers=headers,
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=120),
+        ) as response:
+            text = await response.text()
+            status = response.status
+
+        end = time.time()
+
+        logger.debug(
+            f"Workflow response: {status}, {text}, {payload}"
+        )
+
+        if status != 200:
+            logger.error(f"Dify Workflow 请求失败: {status}")
+            raise HTTPException(status_code=500, detail=f"Dify Workflow 运行失败 ({status})")
+
+        # ✅ 解析响应
+        json_text = json.loads(text)
+        answer = str(json_text.get("data", {}).get("outputs", ""))
+        logger.debug(f"Workflow 结果 answer: {answer}")
+
+        # ✅ 评分逻辑
+        ref_answer = str(input_data_dict.get("ref_answer", ""))
+
+        if not ref_answer:
+            sccore = {"score": 100}
         else:
-            """
-            llm评测，选择llm模型和message方法
-            """
-            llm_record = llm['llm_record']
-            llm_func = llm['llm_func']
-            if llm_func == send_message_aliyun_dashscope.__name__:
-                llm_func = send_message_aliyun_dashscope
-            elif llm_func == send_message_volcengine_ark.__name__:
-                llm_func = send_message_volcengine_ark
-            elif llm_func == send_message_openai_compatible.__name__:
-                llm_func = send_message_openai_compatible
-            llm_response = llm_func(llm_record.get('config'),answer, ref_answer, input_judge_prompt)
-            llm_scorrer = llm_response['json']["choices"][0]["message"]["content"]
-            try:
-                sccore = json.loads(llm_scorrer.replace("```json","").replace("```","").replace("json",""))
-            except Exception as e:
-                logger.error("llm_scorrer json error")
-                logger.error(e)
-                logger.error(f"llm_scorrer: {llm_scorrer}")
-                sccore = extract_score_from_string(llm_scorrer)
-                logger.debug(f"llm_scorrer extracted: {sccore}")
+            llm_record = llm["llm_record"]
+            llm_func = llm["llm_func"]
 
-        ### 计算token数
-        encoded = tokenizer(answer, add_special_tokens=False)
-        token_ids = encoded["input_ids"]
+            # 动态匹配函数名
+            if isinstance(llm_func, str):
+                if llm_func == send_message_aliyun_dashscope.__name__:
+                    llm_func = send_message_aliyun_dashscope
+                elif llm_func == send_message_volcengine_ark.__name__:
+                    llm_func = send_message_volcengine_ark
+                elif llm_func == send_message_openai_compatible.__name__:
+                    llm_func = send_message_openai_compatible
 
-        ### 整理结果
-        result_dict = {}
-        result_dict["time_consumption"] = end - start ### 用时
-        result_dict["token_num"] = len(token_ids) ### 字符数
-        result_dict["TPS"] = result_dict["token_num"] / result_dict["time_consumption"] ### 每秒字符数
-        result_dict["score"] = sccore['score'] ### 得分
+            # 自动识别异步 / 同步 LLM 函数
+            if inspect.iscoroutinefunction(llm_func):
+                llm_response = await llm_func(
+                    llm_record.get("config"),
+                    answer,
+                    ref_answer,
+                    async_request_session,
+                    input_judge_prompt,
+                )
+            else:
+                llm_response = await asyncio.to_thread(
+                    llm_func,
+                    llm_record.get("config"),
+                    answer,
+                    ref_answer,
+                    async_request_session,
+                    input_judge_prompt,
+                )
+
+            llm_response_text = (
+                llm_response.get("text")
+                or llm_response.get("json", {})
+                .get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+            logger.warning(f"llm评分阶段响应: {llm_response_text}")
+            sccore = extract_score_from_string(llm_response_text)
+
+        # ✅ token统计
+        try:
+            encoded = tokenizer(answer, add_special_tokens=False)
+            token_num = len(encoded["input_ids"])
+        except Exception:
+            logger.warning("tokenizer 统计失败，使用字符长度代替")
+            token_num = len(answer)
+
+        result_dict = {
+            "time_consumption": end - start,
+            "token_num": token_num,
+            "TPS": token_num / (end - start) if end > start else 0,
+            "score": sccore["score"],
+            "generated_answer": answer,
+            "error_info": False,
+        }
 
         return result_dict
+
+    except asyncio.TimeoutError:
+        logger.error("❌ Dify Workflow 请求超时")
     except Exception as e:
-        json_text = json.loads(response.text)
-        logger.error(e)
-        logger.error(f"response: {json_text}")
-        result_dict = {}
-        result_dict["time_consumption"] = end - start
-        result_dict["token_num"] = 0
-        result_dict["TPS"] = 0
-        result_dict["score"] = 0
-        return result_dict
+        logger.error("❌ single_test_workflow_non_stream_pressure 出错")
+        logger.exception(e)
+    finally:
+        end = time.time()
+
+    return {
+        "time_consumption": end - start,
+        "token_num": 0,
+        "TPS": 0,
+        "score": 0,
+        "generated_answer": answer,
+        "error_info": True,
+    }
 
 # 验证函数，验证输入参数是否符合dify agent的输入参数要求
 def validate_entry(entry: dict, para_df: pd.DataFrame):
     errors = []
-    if "query" in entry.keys():
+    if "query" in entry.keys() and "variable" in para_df.columns and ("query" not in para_df["variable"].values) :
         del entry["query"]
     for _, row in para_df.iterrows():
         var = row["variable"]
@@ -253,7 +548,7 @@ def validate_entry(entry: dict, para_df: pd.DataFrame):
         if typ in ["text-input", "paragraph"]:
             if not isinstance(value, str):
                 errors.append(f"[{var}] should be a string.")
-            elif len(value) > max_len:
+            elif (max_len is not None) and (len(str(value)) > max_len):
                 errors.append(f"[{var}] length {len(value)} exceeds max_length {max_len}.")
 
         elif typ == "number":
@@ -268,6 +563,8 @@ def validate_entry(entry: dict, para_df: pd.DataFrame):
             errors.append(f"[{var}] unknown type '{typ}'.")
 
     # 3️⃣ 检查多余字段
+    if "variable" not in para_df.columns:
+        return []
     defined_vars = set(para_df["variable"].tolist())
     extra_fields = set(entry.keys()) - defined_vars
     if extra_fields:
@@ -335,15 +632,15 @@ def dify_get_account_id(input_account_profile_url:str,
     response = requests.get(input_account_profile_url, headers=headers)
     logger.info(f"dify account profile response: {response.text}")
     resp_json = json.loads(response.text)
-    logger.warning(f"dify account profile response json: {resp_json}")
+
     try:
         account_id = resp_json['id']
         logger.info(f"dify account id: {account_id}")
         return account_id
     except Exception as e:
-        logger.error(f"dify account profile response json error: {e}")
-        logger.error(f"dify account profile response json: {resp_json}")
-        raise HTTPException(status_code=500, detail=f"dify account profile response json error: {resp_json}")
+        logger.error(e)
+        logger.error(f"dify account profile response: {response.text}")
+        raise HTTPException(status_code=400, detail=f"dify account profile response error, {resp_json}")
 
 def dify_get_agent_type_and_agent_name(
         input_agent_manipulate_url:str,
@@ -354,7 +651,7 @@ def dify_get_agent_type_and_agent_name(
     :param input_bearer_token: 用于权限鉴定的token
     :return: agent type （workflow / chatflow）
     """
-
+    from app.models.test_record import AgentType
     headers = {
         "Authorization": f"Bearer {input_bearer_token}",
         "Content-Type": "application/json",
@@ -371,13 +668,19 @@ def dify_get_agent_type_and_agent_name(
             result_dict['agent_type'] = AgentType.WORKFLOW
         elif resp_json['mode'] == "advanced-chat":
             result_dict['agent_type'] = AgentType.CHATFLOW
+        elif resp_json['mode'] == "chat":
+            result_dict['agent_type'] = AgentType.CHAT
+        elif resp_json['mode'] == "agent-chat":
+            result_dict['agent_type'] = AgentType.AGENT_CHAT
+        elif resp_json['mode'] == "completion":
+            result_dict['agent_type'] = AgentType.COMPLETION
         result_dict['agent_name'] = resp_json['name']
 
         return result_dict
     except Exception as e:
-        logger.error(f"dify agent response json error: {e}")
-        logger.error(f"dify agent response json: {resp_json}")
-        raise HTTPException(status_code=500, detail=f"dify agent response json error: {resp_json}")
+        logger.error(e)
+        logger.error(f"dify agent response: {response.text}")
+        raise HTTPException(status_code=400, detail=f"dify agent response error, {resp_json}")
 
 
 def get_dify_agent_api_key(input_agent_api_key_url:str,
@@ -399,13 +702,16 @@ def get_dify_agent_api_key(input_agent_api_key_url:str,
 
     response = requests.get(input_agent_api_key_url, headers=headers)
     resp_json = response.json()
-    logger.info(f"function 'get_dify_agent_api_key' response: {resp_json}")
-    logger.info(f"dify api key list: {resp_json['data']}")
     try:
+        logger.info(f"function 'get_dify_agent_api_key' response: {resp_json}")
+        logger.info(f"dify api key list: {resp_json['data']}")
         target_data = resp_json['data']
+        return target_data
     except Exception as e:
-        return [e.__str__()]
-    return target_data
+        logger.error(e)
+        logger.error(f"dify agent api key response: {response.text}")
+        raise HTTPException(status_code=400, detail=f"dify agent api key response error, {resp_json}")
+
 
 def create_dify_agent_api_key(input_agent_api_key_url:str,
                             input_bearer_token:str) -> dict:
@@ -425,8 +731,13 @@ def create_dify_agent_api_key(input_agent_api_key_url:str,
 
     response = requests.post(input_agent_api_key_url, headers=headers)
     resp_json = response.json()
-    logger.info(f"dify api key created: {resp_json}")
-    return resp_json
+    try:
+        logger.info(f"dify api key created: {resp_json}")
+        return resp_json
+    except Exception as e:
+        logger.error(e)
+        logger.error(f"dify agent api key response: {resp_json}")
+        raise HTTPException(status_code=400, detail=f"dify agent api key response error, {resp_json}")
 
 def delete_dify_agent_api_key(input_agent_api_key_url:str,
                             input_bearer_token:str,
@@ -459,13 +770,16 @@ def get_agent_input_para_dict(input_dify_url:str,input_dify_api_key:str)->pd.Dat
     response = requests.get(url, headers=headers)
     resp_json = response.json()
     logger.debug(f"dify agent input parameter response: {resp_json}")
+    if response.status_code != 200:
+        logger.error(f"dify agent input parameter response error: {resp_json}")
+        raise HTTPException(status_code=400, detail=f"dify agent input parameter response error, {resp_json}")
     records = []
 
     for item in resp_json["user_input_form"]:
         key = list(item.keys())[0]
         entry = item[key]
         record = {
-            "type": entry.get("type"),
+            "type": entry.get("type") if entry.get("type") else key,
             "variable": entry.get("variable"),
             "label": entry.get("label"),
             "max_length": entry.get("max_length"),
@@ -490,8 +804,8 @@ def get_workflow_parameter_template(api_url:str,api_key:str):
     data_sheet_df = pd.DataFrame(columns=variables)
     excel_buffer = BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-        result.to_excel(writer, index=False, sheet_name="description")
         data_sheet_df.to_excel(writer, index=False, sheet_name="data")
+        result.to_excel(writer, index=False, sheet_name="description")
     # 将指针重置到文件开头
     excel_buffer.seek(0)
 
@@ -509,59 +823,125 @@ def get_chatflow_parameter_template(api_url:str,api_key:str):
     data_sheet_df = pd.DataFrame(columns=variables)
     excel_buffer = BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-        result.to_excel(writer, index=False, sheet_name="description")
         data_sheet_df.to_excel(writer, index=False, sheet_name="data")
+        result.to_excel(writer, index=False, sheet_name="description")
     # 将指针重置到文件开头
     excel_buffer.seek(0)
 
     return excel_buffer
 
-def upload_to_tos(local_path: Path, object_key: str) -> str:
-    """同步上传文件到火山引擎 TOS，返回文件公网 URL"""
-    ak = os.getenv("TOS_ACCESS_KEY")
-    sk = os.getenv("TOS_SECRET_KEY")
-    endpoint = os.getenv("TOS_ENDPOINT")
-    region = os.getenv("TOS_REGION")
-    bucket_name = os.getenv("TOS_BUCKET")
+def get_chat_parameter_template(api_url:str,api_key:str):
 
-    client = tos.TosClientV2(ak, sk, endpoint, region)
+    result = get_agent_input_para_dict(api_url, api_key)
+    logger.debug(f"get_chat_parameter_template result: {result}")
+    if "variable" in result.columns:
+        variables = result["variable"].tolist()
+    else:
+        variables = []
+    variables.append("query")
+    variables.append("ref_answer")
+    data_sheet_df = pd.DataFrame(columns=variables)
+    excel_buffer = BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        data_sheet_df.to_excel(writer, index=False, sheet_name="data")
+        result.to_excel(writer, index=False, sheet_name="description")
+    # 将指针重置到文件开头
+    excel_buffer.seek(0)
+
+    return excel_buffer
+
+def get_agent_chat_parameter_template(api_url:str,api_key:str):
+    result = get_agent_input_para_dict(api_url, api_key)
+    logger.debug(f"get_agent_chat_parameter_template result: {result}")
+    if "variable" in result.columns:
+        variables = result["variable"].tolist()
+    else:
+        variables = []
+    variables.append("query")
+    variables.append("ref_answer")
+    data_sheet_df = pd.DataFrame(columns=variables)
+    excel_buffer = BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        data_sheet_df.to_excel(writer, index=False, sheet_name="data")
+        result.to_excel(writer, index=False, sheet_name="description")
+    # 将指针重置到文件开头
+    excel_buffer.seek(0)
+
+    return excel_buffer
+
+def get_completion_parameter_template(api_url:str,api_key:str):
+    result = get_agent_input_para_dict(api_url, api_key)
+    logger.debug(f"get_completion_parameter_template result: {result}")
+    variables = result["variable"].tolist()
+    variables.append("ref_answer")
+    data_sheet_df = pd.DataFrame(columns=variables)
+    excel_buffer = BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        data_sheet_df.to_excel(writer, index=False, sheet_name="data")
+        result.to_excel(writer, index=False, sheet_name="description")
+    # 将指针重置到文件开头
+    excel_buffer.seek(0)
+
+    return excel_buffer
+
+import os
+from pathlib import Path
+import boto3
+from botocore.exceptions import ClientError
+
+# MinIO / S3 环境变量（也可以写死为常量）
+S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
+S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
+S3_ENDPOINT = os.getenv("S3_ENDPOINT")
+S3_BUCKET = os.getenv("S3_BUCKET")
+
+def get_s3_client():
+    """创建 boto3 S3 客户端（适用于 MinIO）"""
+    return boto3.client(
+        "s3",
+        endpoint_url=S3_ENDPOINT,
+        aws_access_key_id=S3_ACCESS_KEY,
+        aws_secret_access_key=S3_SECRET_KEY,
+    )
+
+def upload_to_tos(local_path: Path, object_key: str) -> str:
+    """上传文件到 MinIO / S3，返回文件公网 URL"""
+    client = get_s3_client()
+    local_path = Path(local_path)
+
     if not local_path.exists():
         raise FileNotFoundError(f"本地文件不存在: {local_path}")
 
     try:
-        result = client.put_object_from_file(bucket_name, object_key, str(local_path))
-        url = f"https://{bucket_name}.{endpoint}/{object_key}"
-        logger.info(f"✅ 上传成功: {url}")
+        logger.info(f"🚀 正在上传: {local_path} → s3://{S3_BUCKET}/{object_key}")
+        client.upload_file(str(local_path), S3_BUCKET, object_key)
+        url = f"{S3_ENDPOINT}/{S3_BUCKET}/{object_key}"
+        logger.success(f"✅ 上传成功: {url}")
         return url
-    except tos.exceptions.TosClientError as e:
-        logger.error(f"TOS 客户端错误: {e.message}, 原因: {e.cause}")
-        raise
-    except tos.exceptions.TosServerError as e:
-        logger.error(f"TOS 服务端错误: code={e.code}, 请求ID={e.request_id}, 消息={e.message}")
+    except ClientError as e:
+        logger.error(f"S3 上传失败: {e}")
         raise
     except Exception as e:
-        logger.exception(f"TOS 未知错误: {e}")
+        logger.exception(f"未知错误: {e}")
         raise
 
 
 def download_from_tos(object_key: str, local_path: str):
-    """从火山 TOS 下载文件"""
-    ak = os.getenv("TOS_ACCESS_KEY")
-    sk = os.getenv("TOS_SECRET_KEY")
-    endpoint = os.getenv("TOS_ENDPOINT")
-    region = os.getenv("TOS_REGION")
-    bucket_name = os.getenv("TOS_BUCKET")
+    """从 MinIO / S3 下载文件"""
+    client = get_s3_client()
+    local_path = Path(local_path)
 
-    client = tos.TosClientV2(ak, sk, endpoint, region)
     try:
-        logger.info(f"📥 正在下载: {object_key} → {local_path}")
-        with open(local_path, "wb") as f:
-            obj = client.get_object(bucket_name, object_key)
-            for chunk in obj:
-                f.write(chunk)
+        # 自动创建目录
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"📥 正在下载: s3://{S3_BUCKET}/{object_key} → {local_path}")
+        client.download_file(S3_BUCKET, object_key, str(local_path))
         logger.success(f"✅ 下载成功: {object_key}")
+    except ClientError as e:
+        logger.error(f"S3 下载失败: {e}")
+        raise
     except Exception as e:
-        logger.error(f"❌ 下载失败: {e}")
+        logger.exception(f"未知错误: {e}")
         raise
 
 

@@ -1,7 +1,5 @@
 from typing import List, Optional
-from sqlalchemy.orm import Session
 from sqlalchemy import select
-from datetime import datetime
 
 from app.core.database import SessionLocal  # 假设你在 database.py 中定义了 SessionLocal
 from app.models.prompt_template import PromptTemplate

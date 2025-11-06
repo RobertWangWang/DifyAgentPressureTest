@@ -32,6 +32,7 @@ class DatasetRead(BaseModel):
     uuid: str
     filename: str
     file_md5: str
+    is_deleted: Optional[bool]
     file_suffix: Optional[str] = None
     tos_key: Optional[str] = None
     tos_url: Optional[str] = None
@@ -39,6 +40,7 @@ class DatasetRead(BaseModel):
     preview_rows: Optional[List[Dict[str, Any]]] = None
     uploaded_by: Optional[str] = None
     agent_id: Optional[str] = None   # ✅ 新增
+
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -1,6 +1,7 @@
 from sqlalchemy import String, Float, DateTime, JSON, Text, Index, func, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+beijing_tz = timezone(timedelta(hours=8))
 from typing import Optional, Any
 import uuid
 from app.core.database import Base
@@ -10,7 +11,7 @@ class SingleRunResult(Base):
     """
     ORM 映射：单次运行结果表 single_run_result
     """
-    __tablename__ = "single_run_result"
+    __tablename__ = "bots_eval_single_run_result"
     __table_args__ = (
         Index("idx_input_task_uuid", "input_task_uuid"),
         Index("idx_create_time", "create_time"),
@@ -69,9 +70,9 @@ class SingleRunResult(Base):
     # 创建时间
     create_time: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.now(),
         nullable=False,
-        comment="创建时间（UTC）"
+        comment="创建时间（北京时间）",
+        default=lambda: datetime.now(beijing_tz),
     )
 
     def __repr__(self) -> str:

@@ -9,11 +9,14 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=128)
+asyncio.get_event_loop().set_default_executor(executor)
 import hashlib
+import os
 
 from app.crud.test_record_crud import TestRecordCRUD
 from app.crud.dataset_crud import DatasetCRUD
-from app.models.dataset import Dataset
 from app.models.provider_model import ProviderModel
 from app.models.test_record import TestRecord, TestStatus, AgentType
 from app.schemas.test_record_schema import (
@@ -27,11 +30,15 @@ from app.schemas.test_record_schema import (
 )
 from app.schemas.dataset_schema import DatasetCreate, DatasetRead
 from app.core.config import settings
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal,AsyncSessionLocal
 from app.services.test_record_services import (
     test_chatflow_non_stream_pressure_wrapper,
+    test_chatflow_stream_pressure_wrapper,
     test_workflow_non_stream_pressure_wrapper,
+
 )
+
+from app.core.celery_app import celery_app
 from app.services.provider_model_services import llm_connection_test
 from app.utils.pressure_test_util import (
     dify_api_url_2_agent_apikey_url,
@@ -43,11 +50,16 @@ from app.utils.pressure_test_util import (
     dify_api_url_2_account_profile_url,
     get_workflow_parameter_template,
     get_chatflow_parameter_template,
-    AgentType,
+    get_chat_parameter_template,
+    get_agent_chat_parameter_template,
+    get_completion_parameter_template,
     upload_to_tos,
 )
-from loguru import logger
+from app.utils.logger import logger
 
+DIFY_API_URL = os.environ.get("TARGET_DIFY_API_URL")
+DIFY_CONCURRENCY = int(os.environ.get("CONCURRENCY", "8"))
+logger.warning(f"test_record_api.py 当前环境的dify api url为：{DIFY_API_URL}")
 router = APIRouter(prefix="/test_records", tags=["TestChatflowRecords"])
 
 
@@ -169,7 +181,7 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     # ✅ 2. 生成 Dify API Key
     try:
         api_key_url = dify_api_url_2_agent_apikey_url(
-            record_payload.dify_api_url, record_payload.dify_test_agent_id
+            DIFY_API_URL, record_payload.dify_test_agent_id
         )
         existing_keys = get_dify_agent_api_key(api_key_url, record_payload.dify_bearer_token)
         token_value = (
@@ -188,6 +200,8 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     # ✅ 3. 创建 TestRecord 基础记录（agent_type/agent_name 暂为空）
     payload_dict = record_payload.model_dump(exclude={"agent_type", "agent_name"})
     payload_dict['dataset_uuid'] = dataset_info.uuid
+    payload_dict['concurrency'] = DIFY_CONCURRENCY
+    payload_dict['dify_api_url'] = DIFY_API_URL
     created = TestRecordCRUD.create(
         db,
         filename=dataset_info.filename,
@@ -203,7 +217,7 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
     # ✅ 4. 获取 Agent 类型与名称
     try:
         agent_api_app_url = dify_api_url_2_agent_api_app_url(
-            record_payload.dify_api_url, record_payload.dify_test_agent_id
+            DIFY_API_URL, record_payload.dify_test_agent_id
         )
         info = dify_get_agent_type_and_agent_name(agent_api_app_url, record_payload.dify_bearer_token)
         agent_type = info.get("agent_type")
@@ -217,7 +231,7 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
 
     # ✅ 5. 获取 Dify Account ID
     try:
-        account_profile_url = dify_api_url_2_account_profile_url(record_payload.dify_api_url)
+        account_profile_url = dify_api_url_2_account_profile_url(DIFY_API_URL)
         dify_account_id = dify_get_account_id(account_profile_url, record_payload.dify_bearer_token)
         TestRecordCRUD.update_by_uuid(db, created.uuid, dify_account_id=dify_account_id)
         logger.info(f"✅ 已更新 Dify Account ID: {dify_account_id}")
@@ -233,9 +247,10 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
             .filter(ProviderModel.provider_name == provider, ProviderModel.model_name == judge_model)
             .all()
         )
+        logger.info(f"✅ 获取 LLM 模型信息: {llm_models}")
         llm = llm_connection_test(candidate_models=llm_models)
         request.session["llm"] = llm
-        logger.info("✅ LLM 模型连接测试通过")
+        logger.info(f"✅ LLM 模型连接测试通过, {llm}")
     except Exception as e:
         logger.warning(f"⚠️ LLM 模型连接失败（非关键步骤）: {e}")
 
@@ -246,6 +261,7 @@ async def create_record(request: Request, db: Session = Depends(get_db)):
             "record_uuid": created.uuid,
             "dataset_file_md5": file_uuid,
             "dataset_tos_url": dataset_info.tos_url,
+            "created_at": created.created_at.isoformat(),
         }
     )
 
@@ -303,32 +319,71 @@ def get_records_by_agent_id(
 ):
     return TestRecordCRUD.get_all_records_by_agent_id(agent_id, page, page_size)
 
-@router.post("/run_test/{uuid_str}", status_code=status.HTTP_200_OK)
+# ✅ 限制最大并发任务数，防止压测太多导致线程爆满
+MAX_CONCURRENT_TASKS = 64
+semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+
+async def run_background_task(func, existing, request, db, mode):
+    """真正的异步后台执行函数"""
+    async with semaphore:
+        try:
+            logger.info(f"开始执行任务 {existing.uuid}, 类型={existing.agent_type}, 模式={mode}")
+            await func(existing, request, db, mode)
+            logger.info(f"✅ 任务 {existing.uuid} 执行完成")
+        except Exception as e:
+            logger.exception(f"❌ 任务 {existing.uuid} 执行失败: {e}")
+
+@router.post("/run_test/{uuid_str}", status_code=200)
 async def run_record(
-        request: Request,
-        uuid_str: str,
-        background_tasks: BackgroundTasks,db: Session = Depends(get_db),
-        mode: str = Query(default="all", description="experiment or full mode+"),
+    request: Request,
+    uuid_str: str,
+    db=Depends(get_db),
+    mode: str = Query(default="all", description="experiment or full mode+"),
 ):
-    existing = await run_in_threadpool(TestRecordCRUD.get_by_uuid, db, uuid_str)
+    """
+    🚀 改造后：将测试任务推送到 Celery 队列执行（非阻塞）
+    """
+    # === 1️⃣ 检查任务记录 ===
+    existing = await asyncio.to_thread(TestRecordCRUD.get_by_uuid, db, uuid_str)
     if existing is None:
         raise HTTPException(status_code=404, detail="Record not found")
 
+    # === 2️⃣ 状态判断 ===
     if existing.status == "running":
         return {"error": "测试任务正在运行中"}
-    elif existing.status == "success":
+    elif existing.status in ["cancelled", "failed"]:
+        return {"error": f"测试任务状态异常：{existing.status}"}
+    elif existing.status in ["success", "experiment"]:
         return existing.result
-    elif existing.status == "cancelled":
-        return {"error": "测试任务已取消"}
 
-    if existing.agent_type == "chatflow":
-        background_tasks.add_task(test_chatflow_non_stream_pressure_wrapper, existing, request, db, mode)
-    elif  existing.agent_type == "workflow":
-        background_tasks.add_task(test_workflow_non_stream_pressure_wrapper, existing, request, db, mode)
+    # === 3️⃣ 根据类型选择任务名称 ===
+    if existing.agent_type in ["chatflow", AgentType.CHAT, AgentType.COMPLETION]:
+        task_name = "tasks.run_chatflow_test"
+    elif existing.agent_type == "workflow":
+        task_name = "tasks.run_workflow_test"
+    elif existing.agent_type == AgentType.AGENT_CHAT:
+        task_name = "tasks.run_chatflow_stream_test"
+    else:
+        raise HTTPException(status_code=400, detail=f"未知 agent_type: {existing.agent_type}")
+
+    # === 4️⃣ 更新状态为 pending ===
+    await asyncio.to_thread(TestRecordCRUD.update_by_uuid, db, uuid_str, status="pending")
+
+    llm_info = request.session.get("llm", {})
+    # === 5️⃣ 提交任务到 Celery ===
+    task = celery_app.send_task(
+        task_name,
+        args=[llm_info,uuid_str, mode],
+        queue="default"
+    )
+
+    logger.info(f"📤 已将任务 {uuid_str} 投递至 Celery 队列 (task_id={task.id})")
 
     return JSONResponse(content={
-        "status": "running",
-        "message": "测试已在后台启动 ✅"
+        "uuid": uuid_str,
+        "task_id": task.id,
+        "status": "queued",
+        "message": f"任务 {uuid_str} 已加入 Celery 队列等待执行 ✅"
     })
 
 @router.get("/get_dataset_first_three_lines/{uuid_str}", status_code=status.HTTP_200_OK)
@@ -353,30 +408,33 @@ def get_uuid_task_status(uuid: str):
     response_model=PaginatedTestRecordResponse,
     status_code=status.HTTP_200_OK,
 )
-def search_by_keyword(
+async def search_by_keyword(
     payload: dict = Body(..., example={"key_word": "", "page": 1, "page_size": 10})
 ):
-    """
-    按关键字搜索测评记录：
-    - key_word 为空：返回全部记录；
-    - key_word 不为空：在 task_name 或 agent_name 中模糊匹配。
-    """
-
     key_word = payload.get("key_word", "")
     page = payload.get("page", 1)
     page_size = payload.get("page_size", 10)
+    console_token = payload.get("console_token", "")
 
     if not isinstance(page, int) or not isinstance(page_size, int):
         raise HTTPException(status_code=400, detail="page 和 page_size 必须为整数")
+    if not console_token:
+        raise HTTPException(status_code=400, detail="console_token 不能为空")
 
-    return TestRecordCRUD.get_records_by_keyword(key_word, page, page_size)
+    async with AsyncSessionLocal() as session:
+        result = await TestRecord.get_records_by_keyword_async(session,
+                                                               key_word,
+                                                               page,
+                                                               page_size,
+                                                               console_token)
+        return result
 
 @router.post("/get_parameter_template_by_agent_id",status_code=status.HTTP_200_OK)
 def get_parameter_template_by_agent_id(payload: AgentParameterRequest):
 
 
     agent_id = payload.agent_id
-    dify_api_url = payload.dify_api_url
+    dify_api_url = DIFY_API_URL
     bearer_token = payload.bearer_token
 
     dify_app_url = dify_api_url_2_agent_api_app_url(dify_api_url, agent_id)
@@ -404,10 +462,17 @@ def get_parameter_template_by_agent_id(payload: AgentParameterRequest):
         raise HTTPException(status_code=500, detail=f"创建 Dify API Key 失败: {e}")
 
     excel_buffer = None
+    logger.debug(f"✅ 获取参数{agent_type}的模板")
     if agent_type == AgentType.WORKFLOW:
         excel_buffer = get_workflow_parameter_template(dify_api_url, api_key)
     elif agent_type == AgentType.CHATFLOW:
         excel_buffer = get_chatflow_parameter_template(dify_api_url, api_key)
+    elif agent_type == AgentType.CHAT:
+        excel_buffer = get_chat_parameter_template(dify_api_url, api_key)
+    elif agent_type == AgentType.AGENT_CHAT:
+        excel_buffer = get_agent_chat_parameter_template(dify_api_url, api_key)
+    elif agent_type == AgentType.COMPLETION:
+        excel_buffer = get_completion_parameter_template(dify_api_url, api_key)
 
     return StreamingResponse(
         excel_buffer,

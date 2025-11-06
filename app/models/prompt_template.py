@@ -1,10 +1,13 @@
 from sqlalchemy import Column, Integer, String, DateTime, Boolean, Text, func
 import uuid as uuid_lib
+from datetime import datetime, timedelta, timezone
+from sqlalchemy.orm import Mapped, mapped_column
+beijing_tz = timezone(timedelta(hours=8))
 
 from app.core.database import Base
 
 class PromptTemplate(Base):
-    __tablename__ = "prompt_template"
+    __tablename__ = "bots_eval_prompt_template"
     __table_args__ = {
         "mysql_charset": "utf8mb4",
         "mysql_collate": "utf8mb4_unicode_ci",
@@ -17,7 +20,12 @@ class PromptTemplate(Base):
     uuid = Column(String(36), unique=True, nullable=False, default=lambda: str(uuid_lib.uuid4()))
 
     # 创建时间，默认当前时间
-    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        comment="创建时间（北京时间）",
+        default=lambda: datetime.now(beijing_tz),
+    )
 
     # 软删除标识
     deleted_at = Column(Boolean, default=False, nullable=False)

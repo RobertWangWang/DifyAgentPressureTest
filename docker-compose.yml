@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kymo-fastapi
+    command: [
+      "uvicorn",
+      "app.main:app",
+      "--host", "0.0.0.0",
+      "--port", "8000",
+      "--workers", "8"
+    ]
+    volumes:
+      - .:/app
+    env_file:
+      - ./app/config/.env.prod
+    ports:
+      - "8000:8000"
+    restart: always
+
+  celery:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kymo-celery
+    command: [
+      "celery",
+      "-A", "app.core.celery_app.celery_app",
+      "worker",
+      "-l", "info",
+      "--concurrency=4",
+      "--prefetch-multiplier=1",
+      "-Q", "default"
+    ]
+    volumes:
+      - .:/app
+    env_file:
+      - ./app/config/.env.prod
+    restart: always

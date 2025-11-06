@@ -1,13 +1,11 @@
-import uuid as uuidlib
-import os
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from sqlalchemy.orm import Session
-from loguru import logger
 
 from app.core.database import SessionLocal
 from app.crud.test_record_crud import TestRecordCRUD
+from app.utils.logger import logger
 
 router = APIRouter(prefix="/download", tags=["Download"])
 

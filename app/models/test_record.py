@@ -1,8 +1,15 @@
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=128)
+asyncio.get_event_loop().set_default_executor(executor)
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+beijing_tz = timezone(timedelta(hours=8))
 from enum import Enum
 from typing import Optional
-
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func, or_
+from sqlalchemy.orm import joinedload
 from sqlalchemy import (
     String,
     Enum as SqlEnum,
@@ -15,8 +22,12 @@ from sqlalchemy import (
     ForeignKey,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+import os
 
 from app.core.database import Base
+from app.schemas.test_record_schema import TestRecordRead
+from app.utils.pressure_test_util import dify_api_url_2_account_profile_url,dify_get_account_id
+DIFY_API_URL = os.environ.get("TARGET_DIFY_API_URL")
 
 
 class TestStatus(str, Enum):
@@ -26,15 +37,19 @@ class TestStatus(str, Enum):
     FAILED = "failed"
     SUCCESS = "success"
     EXPERIMENT = "experiment"
+    PENDING = "pending"
 
 
 class AgentType(str, Enum):
     CHATFLOW = "chatflow"
     WORKFLOW = "workflow"
+    CHAT = "chat"
+    AGENT_CHAT = "agent-chat"
+    COMPLETION = "completion"
 
 
 class TestRecord(Base):
-    __tablename__ = "test_records"
+    __tablename__ = "bots_eval_test_records"
     __table_args__ = {
         "mysql_charset": "utf8mb4",
         "mysql_collate": "utf8mb4_unicode_ci",
@@ -53,10 +68,9 @@ class TestRecord(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        server_default=func.convert_tz(func.now(), "+00:00", "+08:00"),
         nullable=False,
         comment="创建时间（北京时间）",
-        default=datetime.now(),
+        default=lambda: datetime.now(beijing_tz),
     )
 
     is_deleted: Mapped[bool] = mapped_column(
@@ -69,7 +83,7 @@ class TestRecord(Base):
     # ✅ 数据集引用
     dataset_uuid: Mapped[Optional[str]] = mapped_column(
         String(36),
-        ForeignKey("datasets.uuid", ondelete="SET NULL"),
+        ForeignKey("bots_eval_datasets.uuid", ondelete="SET NULL"),
         nullable=True,
         comment="关联数据集 UUID（外键）",
     )
@@ -142,3 +156,61 @@ class TestRecord(Base):
         if include_dataset and self.dataset:
             data["dataset"] = self.dataset.to_dict(exclude_none=True)
         return data
+
+    @staticmethod
+    async def get_records_by_keyword_async(
+        session,
+        key_word: str,
+        page: int,
+        page_size: int,
+        console_token: str,
+    ):
+        # ✅ 异步防阻塞网络请求
+        account_profile_url = dify_api_url_2_account_profile_url(DIFY_API_URL)
+        dify_account_id = await asyncio.to_thread(dify_get_account_id, account_profile_url, console_token)
+
+        base_conditions = [
+            TestRecord.is_deleted.is_(False),
+            TestRecord.status != TestStatus.EXPERIMENT,
+            TestRecord.dify_account_id == dify_account_id,
+        ]
+
+        like_pattern = f"%{key_word}%" if key_word else None
+        query = select(TestRecord).options(joinedload(TestRecord.dataset)).where(*base_conditions)
+
+        if key_word:
+            query = query.where(
+                or_(
+                    TestRecord.task_name.ilike(like_pattern),
+                    TestRecord.agent_name.ilike(like_pattern),
+                )
+            )
+
+        # ✅ 分页 + 排序
+        query = query.order_by(TestRecord.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+        result = await session.execute(query)
+        records = result.scalars().all()
+
+        # ✅ 总数统计
+        count_stmt = select(func.count()).select_from(TestRecord).where(*base_conditions)
+        if key_word:
+            count_stmt = count_stmt.where(
+                or_(
+                    TestRecord.task_name.ilike(like_pattern),
+                    TestRecord.agent_name.ilike(like_pattern),
+                )
+            )
+        total = (await session.scalar(count_stmt)) or 0
+
+        # ✅ 异步防阻塞数据转换
+        records_data = await asyncio.to_thread(
+            lambda: [TestRecordRead.model_validate(r) for r in records]
+        )
+
+        return {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "records": records_data,
+        }
+
