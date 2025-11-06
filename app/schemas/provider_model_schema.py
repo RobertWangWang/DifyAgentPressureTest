@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field
 
 
@@ -90,3 +90,23 @@ class ProviderModelRead(ProviderModelBase):
 class ProviderQueryRequest(BaseModel):
     provider_name: str
     model_name: str
+
+class ProviderModelTreeResponse(BaseModel):
+    """
+    树状模型响应结构：
+    {
+      "open_ai": ["gpt-4", "gpt-3.5-turbo"],
+      "volcengine": ["skychat-pro"]
+    }
+    """
+    data: Dict[str, List[str]] = Field(..., description="按 provider_name 分组的模型树状结构")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "data": {
+                    "open_ai": ["gpt-4", "gpt-3.5-turbo"],
+                    "volcengine": ["skychat-pro"]
+                }
+            }
+        }

@@ -1,7 +1,12 @@
+import aiohttp
 import requests
-from loguru import logger
 from urllib.parse import urlparse
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+executor = ThreadPoolExecutor(max_workers=128)
+asyncio.get_event_loop().set_default_executor(executor)
 
+from app.utils.logger import logger
 JUDGE_PROMPT = """
 你是一名语义相似度评估员。
 
@@ -20,6 +25,8 @@ JUDGE_PROMPT = """
 
 以json的格式返回你的结果，json的格式如下：
 {"score":《你给出的分数》}
+
+注意，返回格式只能是json，不要输出你的思考内容
 
 """
 
@@ -64,8 +71,7 @@ def call_aliyun_dashscope(config: dict) -> dict:
         resp = requests.post(
             endpoint,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=10
+            json=payload
         )
         try:
             js = resp.json()
@@ -75,16 +81,26 @@ def call_aliyun_dashscope(config: dict) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-def send_message_aliyun_dashscope(config: dict,
-                                  gen_text: str,
-                                  ref_text: str,
-                                  judge_prompt: str = JUDGE_PROMPT):
+
+async def send_message_aliyun_dashscope(
+    config: dict,
+    gen_text: str,
+    ref_text: str,
+    aiohttp_session: aiohttp.ClientSession,
+    judge_prompt: str = JUDGE_PROMPT,
+) -> dict:
+    """
+    异步版 - 发送消息到阿里云 DashScope 模型接口
+    """
+
     try:
         endpoint = normalize_endpoint(config.get("endpointId"))
         api_key = config.get("apiKey")
         model = config.get("apiEndpointModelName")
+
         if not (endpoint and api_key and model):
             return {"error": "缺少 endpoint / apiKey / model 配置"}
+
         payload = {
             "model": model,
             "messages": [
@@ -93,18 +109,28 @@ def send_message_aliyun_dashscope(config: dict,
                 {"role": "user", "content": f"参考文本： {ref_text}"}
             ]
         }
-        resp = requests.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=10
-        )
-        try:
-            js = resp.json()
-        except:
-            js = None
-        return {"status": resp.status_code, "text": resp.text, "json": js}
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        # ✅ 使用异步 session 发送请求
+        async with aiohttp_session.post(endpoint, headers=headers, json=payload) as resp:
+            status = resp.status
+            text = await resp.text()
+
+            try:
+                js = await resp.json(content_type=None)
+            except Exception:
+                js = None
+
+            logger.debug(f"[DashScope] {status=}, {text[:200]}")
+
+            return {"status": status, "text": text, "json": js}
+
     except Exception as e:
+        logger.exception("❌ DashScope 请求异常")
         return {"error": str(e)}
 
 def call_openai_compatible(config: dict) -> dict:
@@ -124,8 +150,7 @@ def call_openai_compatible(config: dict) -> dict:
         resp = requests.post(
             endpoint,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=10
+            json=payload
         )
         try:
             js = resp.json()
@@ -135,36 +160,55 @@ def call_openai_compatible(config: dict) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-def send_message_openai_compatible(config: dict,
-                                     gen_text: str,
-                                     ref_text: str,
-                                     judge_prompt: str = JUDGE_PROMPT):
+
+async def send_message_openai_compatible(
+    config: dict,
+    gen_text: str,
+    ref_text: str,
+    aiohttp_session: aiohttp.ClientSession,
+    judge_prompt: str = JUDGE_PROMPT,
+) -> dict:
+    """
+    异步版：调用 OpenAI-compatible API（如 OpenAI / vLLM / Qwen / Ollama 等兼容端点）
+    """
     try:
         endpoint = normalize_endpoint(config.get("endpointId"))
         api_key = config.get("apiKey")
         model = config.get("apiEndpointModelName")
+
         if not (endpoint and api_key and model):
             return {"error": "缺少 endpoint / apiKey / model 配置"}
+
         payload = {
             "model": model,
             "messages": [
                 {"role": "system", "content": judge_prompt},
                 {"role": "user", "content": f"生成的文本： {gen_text}"},
-                {"role": "user", "content": f"参考文本： {ref_text}"}
-            ]
+                {"role": "user", "content": f"参考文本： {ref_text}"},
+            ],
         }
-        resp = requests.post(
-            endpoint,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=10
-        )
-        try:
-            js = resp.json()
-        except:
-            js = None
-        return {"status": resp.status_code, "text": resp.text, "json": js}
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        # ✅ 使用 aiohttp 异步请求
+        async with aiohttp_session.post(endpoint, headers=headers, json=payload) as resp:
+            status = resp.status
+            text = await resp.text()
+
+            try:
+                js = await resp.json(content_type=None)
+            except Exception:
+                js = None
+
+            logger.debug(f"[OpenAI Compatible] {status=}, text[:150]={text[:150]!r}")
+
+            return {"status": status, "text": text, "json": js}
+
     except Exception as e:
+        logger.exception("❌ OpenAI-compatible 调用异常")
         return {"error": str(e)}
 
 
@@ -209,8 +253,7 @@ def call_volcengine_ark(config: dict) -> dict:
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
             },
-            json=payload,
-            timeout=10
+            json=payload
         )
         try:
             js = resp.json()
@@ -220,29 +263,44 @@ def call_volcengine_ark(config: dict) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-def send_message_volcengine_ark(config: dict,
-                                 gen_text: str,
-                                 ref_text: str,
-                                 judge_prompt: str = JUDGE_PROMPT):
+async def send_message_volcengine_ark(
+    config: dict,
+    gen_text: str,
+    ref_text: str,
+    aiohttp_session: aiohttp.ClientSession,
+    judge_prompt: str = JUDGE_PROMPT,
+) -> dict:
+    """
+    异步版：优先使用 SDK 调用 Ark，否则回退 HTTP 调用。
+    """
     api_key = config.get("apiKey")
-    # 模型 ID 可以存在 apiEndpointModelName 或 endpointId 字段里
     model = config.get("apiEndpointModelName") or config.get("endpointId")
+
     if not (api_key and model):
         return {"error": "config 中缺少 apiKey 或 model"}
 
-    # 如果 SDK 可用，尝试用 SDK
+    # ✅ 优先使用 SDK
     if _has_volc_sdk:
         try:
             client = Ark(api_key=api_key)
-            resp = client.chat.completions.create(
+            resp = await asyncio.to_thread(
+                client.chat.completions.create,
                 model=model,
-                messages=[{"role": "user", "content": "Hello"}]
+                messages=[
+                    {"role": "system", "content": judge_prompt},
+                    {"role": "user", "content": f"生成的文本： {gen_text}"},
+                    {"role": "user", "content": f"参考文本： {ref_text}"}
+                ]
             )
-            return {"status": 200, "text": str(resp), "sdk_resp": resp}
+            logger.warning(f"使用 SDK 调用 Ark 成功，返回结果：{resp}")
+
+            # 🧩 SDK 返回 ChatCompletion 对象
+            answer = resp.choices[0].message.content
+            return {"status": 200, "text": answer, "sdk_resp": resp}
         except Exception as e:
             logger.warning(f"使用 SDK 调用 Ark 失败，回退 HTTP 方法: {e}")
 
-    # HTTP fallback：使用官方接口地址（不再依赖 config 的 endpointId 作为 URL）
+    # ✅ HTTP fallback（异步）
     try:
         endpoint = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
         payload = {
@@ -253,19 +311,25 @@ def send_message_volcengine_ark(config: dict,
                 {"role": "user", "content": f"参考文本： {ref_text}"}
             ]
         }
-        resp = requests.post(
-            endpoint,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            },
-            json=payload,
-            timeout=10
-        )
-        try:
-            js = resp.json()
-        except:
-            js = None
-        return {"status": resp.status_code, "text": resp.text, "json": js}
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        async with aiohttp_session.post(endpoint, headers=headers, json=payload) as resp:
+            status = resp.status
+            text = await resp.text()
+
+            try:
+                js = await resp.json(content_type=None)
+            except Exception:
+                js = None
+
+            logger.debug(f"[Ark HTTP] {status=}, {text[:150]=}")
+
+            return {"status": status, "text": text, "json": js}
+
     except Exception as e:
+        logger.exception("❌ Ark HTTP 调用异常")
         return {"error": str(e)}
